@@ -1,0 +1,915 @@
+/* 
+	Script to reconfigure the RADIUS servers in maintenance or disaster mode.
+	
+	Waiting times:
+		- maintenance:
+			- (0-3 * 10 secs)
+			- 5 secs
+			- 10 secs
+			> 15 secs
+		- disaster:
+			- (0-3 * 10 secs)
+			- (0-3 * 10 secs)	-to lock again
+			- 600 secs
+			- 10 secs
+			> 610 secs
+*/
+
+/*
+	Author: bcersows
+	Version: 1.05b
+	Date: 09.10.2014
+	Last Modified By: bcersows
+	Radius Backup Procedure v17
+	###Radius_Proxy_Script-Script_version.slax;v1.05b;2014.10.09
+*/
+
+/*
+	Changelog:
+	----------
+	1.05; 04.08.2014: 
+		- Make the Script to work with many PPPoE sessions. Fixes errors that might occur.
+			15.08.2014:
+		- Fixed the rollback mechanism.
+		- Added commit-and-quit that unlocks the config after commiting.
+		- Disaster: Removed one commit (after setting accounting on) according to Martin Schuster.
+		- Disaster: Changed the request to get amount of sessions in the system.
+	1.05b; 09.10.2014:
+		- Changed description of optional parameters..
+*/
+
+/*
+	test aaa ppp agent-remote-id DEU.DTAG.BICOTEST01 user test password test
+	NBG proxies: normal 217.89.20.100, maintenance 217.89.20.70.
+	op Radius_Proxy_Script-Script_version CONTEXT "/device[name=\"BNGJMX4\"]" oldServerIP 10.201.100.100 mode Disaster newServerIP 12.12.12.12
+	invoke-debugger cli
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns date = "http://exslt.org/dates-and-times";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device|/device/configuration/access/radius-server|/device/configuration" */
+/* @NAME = "Radius-Proxy-Umschaltung" */
+/* @DESCRIPTION = "Skript zur Umschaltung des Radius-Servers. Dabei kann entweder nach Maintenance- oder nach Disaster-Vorgehensweise umgeschalten werden. Benutzt keine Configlets. Nach v16." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'oldServerIP','defaultvalue':'217.89.29.24'},{'name':'mode','selectionvalues':'Maintenance, Disaster'},{'name':'newServerIP','defaultvalue':'217.89.20.70'},{'name':'loopbackIP','defaultvalue':''},{'name':'password','defaultvalue':''},{'name':'AAATest_Username','defaultvalue':'dummy'},{'name':'AAATest_Password','defaultvalue':'dummy'},{'name':'AAATest_LineID','defaultvalue':'DEU.DTAG.BICOTEST01'}]" */
+/* @VARIABLECONTEXTs = "[{'name':'oldServerIP','defaultvalue':'217.89.29.24'},{'name':'mode','selectionvalues':'Disaster'},{'name':'newServerIP','defaultvalue':'10.201.100.100'},{'name':'loopbackIP','defaultvalue':''},{'name':'password','defaultvalue':''},{'name':'AAATest_Username','defaultvalue':'dummy'},{'name':'AAATest_Password','defaultvalue':'dummy'},{'name':'AAATest_LineID','defaultvalue':'DEU.DTAG.BICOTEST01'}]" */
+/* @CONFIRMATIONs = "Wirklich umschalten? Bitte ausgewählten Modus überprüfen. <br />Im Disaster-Modus ist eine längere Wartepause nötig. Das bitte beachten."  */
+/* @PROMOTEs = "yes" */
+
+/* Loopback 11.99.0.16 */
+mvar $counter = 0;
+mvar $output = "";
+mvar $commitCount = 0; mvar $didCommit = false();
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+	<argument> {
+		<name> "mode";
+		<description> "Umschaltungsmodus (Maintenance, Disaster).";
+	}
+	<argument> {
+		<name> "oldServerIP";
+		<description> "IP des alten Radius-Servers (wenn nicht per CIM direkt aufgerufen).";
+	}
+	<argument> {
+		<name> "newServerIP";
+		<description> "IP des neuen Radius-Servers.";
+	}
+	<argument> {
+		<name> "password";
+		<description> "Optional: Passwort des Radius-Servers. Wird normalerweise aus der Konfiguration des alten Servers ausgelesen.";
+	}
+	<argument> {
+		<name> "loopbackIP";
+		<description> "Optional: Loopback-IP des BNG, eingetragen als Source-Adresse des Radius-Servers. Wird normalerweise aus der Konfiguration des alten Servers ausgelesen.";
+	}
+}
+param $CONTEXT;
+param $mode;
+param $oldServerIP;
+param $newServerIP;
+param $loopbackIP;
+param $password;
+
+var $disasterModeFirstMessage = "radius backup disaster start";
+var $unlockRpc = "unlock-configuration";
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $changeMsg = "Changed by Script";
+	mvar $unlock-results;
+	mvar $load-results;
+	mvar $loadConfigRpcs;
+	mvar $booleanTester;
+	mvar $try;
+	mvar $lock-results;
+	mvar $configRpc;
+	mvar $results;
+		
+	<output>  {
+		expr "\n";
+	
+		/* Open connection, test if it succeds. */
+		var $connection = jcs:open();
+		if ( $connection ) { } else {	
+			expr "[LOG] MSG#ERR000: Konnte keine Verbindung zum BNG aufbauen. Abbruch."; expr "\n";
+			<xsl:message terminate="yes"> "[LOG] MSG#ERR000: Konnte keine Verbindung zum BNG aufbauen.";
+		}	
+		
+		var $myDevice = {
+			if ( $CONTEXT ) {
+				expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+			} else {
+				var $devQuery = <get-configuration> {
+					<configuration> {
+						<system> {
+							<host-name>;
+						}
+					}
+				}
+				var $devQueryResult = jcs:execute( $connection, $devQuery );
+				expr $devQueryResult/system/host-name;	
+			}
+		}
+		
+		var $oldSrvIP = {
+			if ( jcs:regex( "/device\\[name=\".*\"\\]/configuration/access/radius-server\\[name=\".*\"\\]", $CONTEXT ) ) {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\]/configuration/access/radius-server\\[name=\"(.*)\"\\]", $CONTEXT )[3];
+			} else {
+				expr $oldServerIP;
+			}
+		}
+	
+		expr "Startinformationen: Device " _ $myDevice _ ", alter Radius-Server: " _ $oldSrvIP _ ", neuer Radius-Server: " _ $newServerIP _ ".";
+		expr "\n";
+		
+		/*
+		*	Get configuration.
+		*/
+
+
+		/* show access radius-server 80.156.51.5
+		 * show access profile BNG radius | match ser
+		 * show access profile BNG-ESSMD radius | match ser
+		*/
+		set $unlock-results = jcs:execute( $connection, $unlockRpc );
+		
+		set $booleanTester = true(); set $try = 0; var $maxTries = 3;
+		while ( $booleanTester ) {
+			set $lock-results = jcs:execute( $connection, "lock-configuration" );
+			set $try = $try + 1;
+			if( $lock-results//self::xnm:error ) {
+				if ( $try > $maxTries ) {
+					set $booleanTester = false();
+					set $unlock-results = jcs:execute( $connection, $unlockRpc );
+					expr "[LOG] MSG#ERR044: Konnte Datenbank nicht exklusiv belegen."; expr "\n";
+					<xsl:message terminate="yes"> "Konnte Datenbank nicht exklusiv belegen.";
+				}
+				expr "Fehler beim exklusiven Zugriff auf Datenbank. Vesuch Nummer " _ $try _ " von " _ $maxTries _ ". Versuche erneut."; expr "\n";
+				expr jcs:sleep( 10 );	/* Wait some seconds.. */
+			} else {
+				set $booleanTester = false();
+			}
+		}
+		
+		set $configRpc = <get-configuration> {
+			<configuration> {
+				<access> {
+					<radius-server>;
+					<profile>;
+				}
+			}
+		}
+		
+		set $results = jcs:execute( $connection, $configRpc );
+		
+		expr " "; expr "\n";
+		expr "# -------------"; expr "\n";
+		expr "# Verify config"; expr "\n";
+		expr "# -------------"; expr "\n";
+		
+		call checkErrors( $resultsNodeSet = $results, $msg = "Konnte keine Daten aus der Konfiguration lesen.", $connection );
+		
+		/* Check if that radius server in config. */
+		if ( not( $results/access/radius-server[name=$oldSrvIP] ) ) {
+			expr "Alle konfigurierten Radius-Server: \n";
+			for-each ( $results/access/radius-server/name ) {
+				expr "\t- " _ . _ "\n";
+			}
+			expr "[LOG] MSG#ERR046 Angegebener Radius-Server nicht in Konfiguration enthalten."; expr "\n";
+			set $unlock-results = jcs:execute( $connection, $unlockRpc );
+			<xsl:message terminate="yes"> "[ACT] Abbruch";
+		}
+		
+		expr "Konfiguration des Radius Server " _ $oldSrvIP _ ":"; expr "\n";
+		expr $results/access/radius-server[name=$oldSrvIP]; expr "\n";
+		
+		/* Check if that radius server got a secret and source address configured. */
+		if ( not($results/access/radius-server[name=$oldSrvIP]/secret) || not($results/access/radius-server[name=$oldSrvIP]/source-address) ) {
+			if ( not($results/access/radius-server[name=$oldSrvIP]/secret) ) {
+				expr "[LOG] MSG#ERR045 Keine Daten gelesen zu access radius-server [ secret ]"; expr "\n";
+			}
+			if ( not($results/access/radius-server[name=$oldSrvIP]/source-address) ) {
+				expr "[LOG] MSG#ERR045 Keine Daten gelesen zu access radius-server [ source-address ]"; expr "\n";
+			}
+			if ( ( not($results/access/radius-server[name=$oldSrvIP]/secret) && jcs:empty( $password ) ) || 
+				( not($results/access/radius-server[name=$oldSrvIP]/source-address) && jcs:empty( $loopbackIP ) ) ) {
+				expr "[LOG] MSG#ERR046 Keine Secret oder Source-Address"; expr "\n";
+				set $unlock-results = jcs:execute( $connection, $unlockRpc );
+				<xsl:message terminate="yes"> "[ACT] Abbruch";
+			}
+		}
+		
+		expr "\n"; expr "BNG Authentication Server "; expr "\n";  
+		for-each ( $results/access/profile[name="BNG"]/radius/authentication-server ) { 
+			expr . _ ", "; 
+		} 
+		expr "\n"; expr "Accounting Server "; expr "\n";
+		for-each ( $results/access/profile[name="BNG"]/radius/accounting-server ) { 
+			expr . _ ", "; 
+		}
+		expr "\n"; expr "\n";
+		
+		expr "\n"; expr "BNG-ESSMD Authentication Server "; expr "\n";  
+		for-each ( $results/access/profile[name="BNG-ESSMD"]/radius/authentication-server ) { 
+			expr . _ ", "; 
+		} 
+		expr "\n"; expr "Accounting Server "; expr "\n"; 
+		for-each ( $results/access/profile[name="BNG-ESSMD"]/radius/accounting-server ) { 
+			expr . _ ", "; 
+		}
+		expr "\n"; expr "\n";
+		
+		/* If one of the authentication-/auth-server is not set. */
+		if ( not( $results/access/profile[name="BNG"]/radius/authentication-server && $results/access/profile[name="BNG"]/radius/accounting-server && $results/access/profile[name="BNG-ESSMD"]/radius/authentication-server && $results/access/profile[name="BNG-ESSMD"]/radius/accounting-server ) ) {
+			if ( not($results/access/profile[name="BNG"]/radius/authentication-server) ) {
+				expr "[LOG] MSG#ERR046 Keine Daten gelesen zu [ authentication-server ] in profile [ BNG ]"; expr "\n";
+			}
+			if ( not($results/access/profile[name="BNG"]/radius/accounting-server) ) {
+				expr "[LOG] MSG#ERR046 Keine Daten gelesen zu [ accounting-server ] in profile [ BNG ]"; expr "\n";
+			}
+			if ( not($results/access/profile[name="BNG-ESSMD"]/radius/authentication-server) ) {
+				expr "[LOG] MSG#ERR046 Keine Daten gelesen zu [ authentication-server ] in profile [ BNG-ESSMD ]"; expr "\n";
+			}
+			if ( not($results/access/profile[name="BNG-ESSMD"]/radius/accounting-server) ) {
+				expr "[LOG] MSG#ERR046 Keine Daten gelesen zu [ accounting-server ] in profile [ BNG-ESSMD ]"; expr "\n";
+			}
+			call close( $connection );
+			<xsl:message terminate="yes"> "[ACT] Abbruch";
+		}
+		
+		/* Check if the given IP is set as authentication and accounting server. */
+		set $booleanTester = true();
+		if ( $oldSrvIP != $results/access/profile[name="BNG"]/radius/authentication-server ) { 
+			set $booleanTester = false(); expr "[LOG] MSG#ERR019 Proxy-IP SOLL ungleich Proxy-IP IST; Server = [ authentication-server ] in profile [ BNG ]"; expr "\n"; 
+		}
+		if ( $oldSrvIP != $results/access/profile[name="BNG"]/radius/accounting-server ) { 
+			set $booleanTester = false(); expr "[LOG] MSG#ERR019 Proxy-IP SOLL ungleich Proxy-IP IST; Server = [ accounting-server ] in profile [ BNG ]"; expr "\n"; 
+		}
+		if ( $oldSrvIP != $results/access/profile[name="BNG-ESSMD"]/radius/authentication-server ) { 
+			set $booleanTester = false(); expr "[LOG] MSG#ERR019 Proxy-IP SOLL ungleich Proxy-IP IST; Server = [ authentication-server ] in profile [ BNG-ESSMD ]"; expr "\n"; 
+		}
+		if ( $oldSrvIP != $results/access/profile[name="BNG-ESSMD"]/radius/accounting-server ) { 
+			set $booleanTester = false(); expr "[LOG] MSG#ERR019 Proxy-IP SOLL ungleich Proxy-IP IST; Server = [ accounting-server ] in profile [ BNG-ESSMD ]"; expr "\n"; 
+		}
+		
+		if ( not( $booleanTester ) ) {
+			call close( $connection );
+			<xsl:message terminate="yes"> "[ACT] Abbruch";
+		}
+		
+		var $myPwd = {
+			if ( not( jcs:empty( $password ) ) ) { expr $password;
+			} else { expr $results/access/radius-server[name=$oldSrvIP]/secret; }
+		}
+		var $myLoopback = {
+			if ( not( jcs:empty( $loopbackIP ) ) ) { expr $loopbackIP;
+			} else { expr $results/access/radius-server[name=$oldSrvIP]/source-address; }
+		}
+		
+		if ( $mode == "Maintenance" ) {
+		
+			expr ""; expr "\n";
+			expr "\tMaintenance mode"; expr "\n";
+			expr "\t----------------"; expr "\n";
+
+			/* delete access profile BNG radius authentication-server 80.156.51.5 
+			 * delete access profile BNG authentication-order radius
+			 * delete access profile BNG-ESSMD radius authentication-server 80.156.51.5 
+			 */
+			expr " "; expr "\n";
+			expr "# ------------------------------"; expr "\n";
+			expr "# disable authentication server "; expr "\n";
+			expr "# ------------------------------"; expr "\n";
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<access> {
+						<profile> {
+							<name> "BNG";
+							<radius> {
+								<authentication-server delete="delete"> $oldSrvIP;
+							}
+							<authentication-order delete="delete"> "radius";
+						}
+						<profile> {
+							<name> "BNG-ESSMD";	
+							<radius> {
+								<authentication-server delete="delete"> $oldSrvIP;
+							}
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Loeschen von altem authentication-server aus 'BNG'- und 'BNG-ESSMD'-Profilen. Loeschen von authentication-order aus Profil 'BNG'."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR010 Konnte nicht loeschen." );
+			
+			expr " "; expr "\n";
+			expr "# --------------------"; expr "\n";
+			expr "# configure new server"; expr "\n";
+			expr "# --------------------"; expr "\n";
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<access> {
+						<radius-server> {
+							<name> $newServerIP;
+							<port> 1645;
+							<accounting-port> 1646;
+							<secret> $myPwd;
+							<timeout> 5;
+							<retry> 3;
+							<accounting-timeout> 10;
+							<accounting-retry> 30;
+							<max-outstanding-requests> 2000;
+							<source-address> $myLoopback;
+						}
+						<profile> {
+							<name> "BNG";
+							<radius> {
+								<accounting-server> $newServerIP;
+							}
+						}
+						<profile> {
+							<name> "BNG-ESSMD";
+							<radius> {
+								<accounting-server> $newServerIP;
+							}
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Aufsetzen des neuen radius-servers. Hinzufuegen als accounting-server zu 'BNG'- und 'BNG-ESSMD'-Profilen."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR011 Konnte nicht setzen." );
+			
+			expr " "; expr "\n";
+			expr "# ---------------------------------------------------"; expr "\n";
+			expr "# Modify old server settings (shift accounting queue)"; expr "\n";
+			expr "# ---------------------------------------------------"; expr "\n";
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<access> {
+						<radius-server> {
+							<name> $oldSrvIP;
+							<accounting-port> 1814;
+							<timeout> 1;
+							<retry> 1;
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Aenderung des alten radius-servers."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR012 Konnte nicht setzen." );
+			call commit( $connection, $msg = "\tradius backup maintenance start" );
+			
+			/* Wait 5 seconds */
+			expr "Wait 5 seconds"; expr "\n";
+			expr jcs:sleep( 5 );
+			
+			expr " "; expr "\n";
+			expr "# -------------------------------------"; expr "\n";
+			expr "# delete old accounting server settings"; expr "\n";
+			expr "# -------------------------------------"; expr "\n";
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<access> {
+						<profile> {
+							<name> "BNG";
+							<radius> {
+								<accounting-server delete="delete"> $oldSrvIP;
+							}
+						}
+						<profile> {
+							<name> "BNG-ESSMD";
+							<radius> {
+								<accounting-server delete="delete"> $oldSrvIP;
+							}
+						}					
+						<radius-server delete="delete"> {
+							<name> $oldSrvIP;
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Loeschen von altem accounting-server aus 'BNG'- und 'BNG-ESSMD'-Profilen. Loeschen des alten radius-servers."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR013 Konnte nicht loeschen." );
+			
+			expr " "; expr "\n";
+			expr "# ------------------------"; expr "\n";
+			expr "# activate new auth server"; expr "\n";
+			expr "# ------------------------"; expr "\n";
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<access> {
+						<profile> {
+							<name> "BNG";
+							<radius> {
+								<authentication-server> $newServerIP;
+							}
+							<authentication-order> "radius";
+						}
+						<profile> {
+							<name> "BNG-ESSMD";
+							<radius> {
+								<authentication-server> $newServerIP;
+							}
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Eintragen des neuen radius-servers als authentication-server. Setzen von authentication-order 'radius'."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR014 Konnte nicht setzen." );
+			call commit( $connection, $msg = "\tradius backup maintenance finished" );
+			
+			expr " "; expr "\n";
+			expr jcs:sleep( 10 );
+			
+			call checkPPP( $connection );
+			
+			expr " "; expr "\n"; expr "[LOG] MSG#OK099 Konfiguration erfolgreich abgeschlossen";
+
+		} else {	/* if Maintenance - else */
+			
+			expr jcs:syslog( "user.info", "radius proxy: disaster" );
+			
+			expr ""; expr "\n";
+			expr "\tDisaster mode"; expr "\n";
+			expr "\t-------------"; expr "\n";
+			
+			/* delete access profile BNG radius authentication-server 80.156.51.5 
+			delete access profile BNG authentication-order radius
+			delete access profile BNG-ESSMD radius authentication-server 80.156.51.5 */
+			expr " "; expr "\n";
+			expr "# ----------------------------------------"; expr "\n";
+			expr "# deactivate authentication and accounting"; expr "\n";
+			expr "# ----------------------------------------"; expr "\n";
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<access> {
+						<profile> {
+							<name> "BNG";
+							<radius> {
+								<authentication-server delete="delete"> $oldSrvIP;
+								<accounting-server delete="delete"> $oldSrvIP;
+							}
+						}
+						<profile> {
+							<name> "BNG-ESSMD";
+							<radius> {
+								<authentication-server delete="delete"> $oldSrvIP;
+								<accounting-server delete="delete"> $oldSrvIP;
+							}
+						}
+						<radius-server> {
+							<name delete="delete"> $oldServerIP;
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Loeschen von altem authentication-/accounting-server aus 'BNG'- und 'BNG-ESSMD'-Profilen. Loeschen alter RADIUS."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR010 Konnte nicht loeschen." );
+			call commit( $connection, $msg = $disasterModeFirstMessage );
+			
+			/* Disable interfaces */
+			expr " "; expr "\n";
+			expr "# --------------------------------"; expr "\n";
+			expr "# disable access facing interfaces"; expr "\n";
+			expr "# --------------------------------"; expr "\n";
+			set $configRpc = <get-configuration> {
+				<configuration> {
+					<interfaces>;
+				}
+			}
+			set $results = jcs:execute( $connection, $configRpc );
+			mvar $accessFacingInterfaces;
+			/* Interfaces that are access-facing, have an hierarchical-scheduler and are enabled. */
+			for-each ( $results/interfaces/interface[hierarchical-scheduler][undocumented/enable] ) {
+				append $accessFacingInterfaces += <interface> ./name;
+			}
+			
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<interfaces> {
+						for-each ( $accessFacingInterfaces/interface ) {
+							<interface> {
+								<name> .;
+								<enable delete="delete">;
+							}
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Deaktivieren aller Access facing-Interfaces durch Loeschen des 'enable'-Attributs."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR011 Konnte nicht deaktivieren." );
+			call commit( $connection, $msg = "\tradius backup disaster disabled interfaces" );
+			/* After commit unlock DB. -> commit and-quit */
+			set $unlock-results = jcs:execute( $connection, $unlockRpc );
+			
+			/* Clear sessions / subscribers */
+			/* Use $booleanTester to check both statements. */
+			expr " "; expr "\n";
+			expr "# -----------------------"; expr "\n";
+			expr "# Clear subscriber states"; expr "\n";
+			expr "# -----------------------"; expr "\n";
+			set $load-results = jcs:execute( $connection, "clear-pppoe-sessions-information" );
+			set $booleanTester = false();
+			if( $load-results//self::xnm:error ) { set $booleanTester = true(); }
+			set $loadConfigRpcs = <clear-l2tp-destination-information> { <all>; }
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Entfernen von sessions und subscribers."; expr "\n";
+			/* Check if one of the two disconnect commands threw an error. */
+			if( $load-results//self::xnm:error || $booleanTester ) {
+				expr "[LOG] MSG#ERR012 Konnte subscriber nicht entfernen."; expr "\n";
+				call close( $connection );
+				<xsl:message terminate="yes"> "[LOG] MSG#ERR012 Konnte subscriber nicht entfernen.";
+			}
+			
+			/* Wait until all subscribers are logged out. */
+			set $booleanTester = true(); set $try = 0; var $sleepMaxTries = 40;
+			while ( $booleanTester ) {
+				/* TODO: Might need to clean up. */
+				/*var $checkResults = jcs:execute( $connection, "get-subscribers-summary" );*/
+				var $checkSessionsESSMResults = jcs:execute( $connection, "get-extensible-subscriber-services-sessions" );
+				var $checkSessionsPPPoEResults = jcs:execute( $connection, "get-pppoe-statistics-information" );
+				set $try = $try + 1;
+				/* VLANs are ok, need to check if no ESSM and PPPoEs. */
+				/*if( $checkResults//self::xnm:error || 
+					$checkResults/counters/session-type-essm ||
+					$checkResults/counters/session-type-pppoe
+					) {*/
+				if( $checkSessionsPPPoEResults//self::xnm:error || 
+					$checkSessionsESSMResults//self::xnm:error || 
+					$checkSessionsPPPoEResults/pppoe-statistics/active-sessions > 0 ||
+					$checkSessionsESSMResults/sessions/total-sessions > 0
+					) {
+					if ( $try > $sleepMaxTries ) {
+						set $booleanTester = false();
+						expr "Stopping to check for logged out subscribers after " _ $try _ " tries. Session counter: .";
+						call close( $connection );
+					}
+					expr "Subscriber check: " _ $try _ " of " _ $sleepMaxTries _ "."; expr "\n";
+					expr jcs:sleep( 15 );
+				} else {
+					expr "[LOG] No subscribers.\n";
+					set $booleanTester = false();
+				}
+			}
+			
+			/* Verify */
+			expr " "; expr "\n";
+			expr "# -----------------------------"; expr "\n";
+			expr "# Verify subscribers logged out"; expr "\n";
+			expr "# -----------------------------"; expr "\n";
+			set $loadConfigRpcs = <get-configuration> {
+				<configuration> {
+					<groups> {
+						<name> "iceaaa-dynamic";
+						<apply-macro> {
+							<name>;
+						}
+					}
+				}
+			}
+			set $results = jcs:execute( $connection, $loadConfigRpcs );
+			expr jcs:syslog( "user.info", "radius proxy: get apply-macros" );
+			var $anzahlApplyMacro = count( $results/groups[name="iceaaa-dynamic"]/apply-macro/name );
+			expr "Anzahl Apply Macros: " _ $anzahlApplyMacro _ "\n";
+			for-each ( $results/groups[name="iceaaa-dynamic"]/apply-macro/name ) {
+				expr "\tApply-macros: " _ . _ "."; expr "\n";
+			}
+			/* check values */
+			/* TODO: Might need to delete. :) */
+			if ( $anzahlApplyMacro > 0 ) {
+				expr "[LOG] MSG#ERR013 Problem beim Ausloggen der subscriber - apply-macros vorhanden. Starte commit."; expr "\n";
+				/* "autoclean" let's the JunOS script perform a full autoclean (deleting old sessions, ...). */
+				call commit( $connection, $msg = "autoclean\tradius proxy disaster Log out any subscribers." );
+			}
+			
+			expr " "; expr "\n";
+			expr "# -------------------------------"; expr "\n";
+			expr "# clear aaa statistics accounting"; expr "\n";
+			expr "# -------------------------------"; expr "\n";
+			set $loadConfigRpcs = <clear-aaa-statistics-table> { <accounting>; }
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Loeschen von AAA-Statistiken.."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "Fehler beim Loeschen." );
+			
+			/* Try to lock database again. */
+			set $booleanTester = true(); set $try = 0;
+			while ( $booleanTester ) {
+				set $lock-results = jcs:execute( $connection, "lock-configuration" );
+				set $try = $try + 1;
+				if( $lock-results//self::xnm:error ) {
+					if ( $try > $maxTries ) {
+						set $booleanTester = false();
+						set $unlock-results = jcs:execute( $connection, $unlockRpc );
+						expr "[LOG] MSG#ERR044: Konnte Datenbank nicht exklusiv belegen."; expr "\n";
+						call close( $connection );
+						<xsl:message terminate="yes"> "Konnte Datenbank nicht exklusiv belegen.";
+					}
+					expr "Fehler beim exklusiven Zugriff auf Datenbank. Vesuch Nummer " _ $try _ " von " _ $maxTries _ ". Versuche erneut."; expr "\n";
+					expr jcs:sleep( 10 );	/* Wait some seconds.. */
+				} else {
+					set $booleanTester = false();
+				}
+			}
+			
+			expr " "; expr "\n";
+			expr "# --------------------"; expr "\n";
+			expr "# Configure new server"; expr "\n";
+			expr "# --------------------"; expr "\n";
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<access> {
+						<radius-server> {
+							<name> $newServerIP;
+							<port> 1645;
+							<accounting-port> 1646;
+							<secret> $myPwd;
+							<timeout> 5;
+							<retry> 3;
+							<accounting-timeout> 10;
+							<accounting-retry> 30;
+							<max-outstanding-requests> 2000;
+							<source-address> $myLoopback;
+						}
+						<profile> {
+							<name> "BNG";
+							<radius> {
+								<accounting-server> $newServerIP;
+							}
+						}
+						<profile> {
+							<name> "BNG-ESSMD";
+							<radius> {
+								<accounting-server> $newServerIP;
+							}
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Aufsetzen des neuen radius-servers. Hinzufuegen als accounting-server zu 'BNG'- und 'BNG-ESSMD'-Profilen."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR014 Konnte nicht setzen." );
+			
+			expr " "; expr "\n";
+			expr "# ----------------------"; expr "\n";
+			expr "# initiate accounting-on"; expr "\n";
+			expr "# ----------------------"; expr "\n";
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<access> {
+						<profile> {
+							<name> "BNG";
+							<accounting> {
+								<send-acct-status-on-config-change>;
+							}
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Setze accounting-on."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR015 Fehler beim Setzen von Accounting-On." );
+			call commit( $connection, $msg = "\tradius backup disaster sending accounting on" );
+			
+			expr " "; expr "\n";
+			expr "# ------------------------------------"; expr "\n";
+			expr "# Verify that accounting has been sent"; expr "\n";
+			expr "# ------------------------------------"; expr "\n";
+			/* Check it is sent */
+			set $loadConfigRpcs = <get-aaa-module-statistics> { <accounting>; }
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Check AAA.."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR015 Fehler beim Abfragen der Accounting Requests." );
+			if ( $load-results/requests > 0 ) {
+				expr "[LOG] Accounting Response Success"; expr "\n";
+			} else {
+				expr "[LOG] Accounting Response Failure"; expr "\n";
+				/* TODO: Break? */
+			}
+			
+			expr " "; expr "\n";
+			expr "# --------------------------------------------------"; expr "\n";
+			expr "# deactivate sending accounting-on on config changes"; expr "\n";
+			expr "# --------------------------------------------------"; expr "\n";
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<access> {
+						<profile> {
+							<name> "BNG";
+							<accounting> {
+								<send-acct-status-on-config-change delete="delete">;
+							}
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Entferne accounting-on."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR016: Fehler beim Entfernen von Accounting-On." );
+			/*call commit( $connection, $msg = "\tradius backup disaster remove accounting on" );*/
+			
+			expr " "; expr "\n";
+			expr "# -------------------------------"; expr "\n";
+			expr "# Configure authentication server"; expr "\n";
+			expr "# -------------------------------"; expr "\n";
+			expr " "; expr "\n";
+			expr "# activate authentication"; expr "\n";
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<access> {
+						<profile> {
+							<name> "BNG";
+							<radius> {
+								<authentication-server> $newServerIP;
+							}
+						}
+						<profile> {
+							<name> "BNG-ESSMD";
+							<radius> {
+								<authentication-server> $newServerIP;
+							}
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Hinzufuegen als authentication-server zu 'BNG'- und 'BNG-ESSMD'-Profilen."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR017 Konnte nicht setzen." );
+			
+			/* Enable interfaces */
+			expr " "; expr "\n"; expr "# activate access facing interfaces"; expr "\n";
+			set $loadConfigRpcs = <load-configuration action="merge"> {
+				<configuration> {
+					<interfaces> {
+						for-each ( $accessFacingInterfaces/interface ) {
+							<interface> {
+								<name> .;
+								<enable>;
+							}
+						}
+					}
+				}
+			}
+			set $load-results = jcs:execute( $connection, $loadConfigRpcs );
+			expr "[LOG] Aktivieren aller Access facing-Interfaces durch Hinzufuegen des 'enable'-Attributs."; expr "\n";
+			call checkErrors( $resultsNodeSet = $load-results, $connection, $msg = "[LOG] MSG#ERR018 Konnte nicht setzen." );
+			
+			call commit-and-quit( $connection, $msg = "\tradius backup disaster finished" );
+			/* Wait 10 seconds */
+			expr jcs:sleep ( 10 );
+			
+			call checkPPP( $connection );
+			
+			expr " "; expr "\n"; expr "[LOG] MSG#OK099 Konfiguration erfolgreich abgeschlossen"; 
+		}
+
+		set $unlock-results = jcs:execute( $connection, $unlockRpc );
+		set $didCommit = false();	/* So that no rollback happens. */
+		expr jcs:close( $connection );
+	}
+}
+}
+
+template close ( $connection ) {
+	expr "[LOG] Closing connection.";
+	if ( $didCommit ) {
+		call rollback( $connection, $rbCount = $commitCount );
+	}
+	var $unlock-results = jcs:execute( $connection, $unlockRpc );
+	expr "[LOG] Unlocked database: "; 	
+	if( $unlock-results//self::xnm:error ) {
+		expr "[LOG] MSG#ERR065" _ $unlock-results;
+	}
+	expr jcs:close( $connection );
+}
+
+template rollback( $connection, $rbCount = 0 ) {
+	var $myRbCount = {
+		if ( $mode == "Maintenance" ) {
+			expr $rbCount;
+		} else {
+			var $lastCommits = jcs:execute( $connection, "get-commit-information" );
+			/* If the nth commit has the first disaster commit message as comment, then no commit happened in between. */
+			if ( contains( $lastCommits/commit-history[ sequence-number == ($rbCount - 1) ]/log/text(), $disasterModeFirstMessage ) ) {
+				expr $rbCount;
+			} else {
+				expr $lastCommits/commit-history[log == $disasterModeFirstMessage]/sequence-number/text() + 1;
+			}
+		}
+	}
+	
+	var $rollbackRPC = <load-configuration rollback=$myRbCount>;
+	var $rb-results = jcs:execute( $connection, $rollbackRPC );
+	/*var $rb-results := {
+		call jcs:load-configuration( $connection, $rollback=$rbCount )
+	}*/
+	var $msg = "\tRadiusProxyScript: Rolled back " _ $myRbCount _ ".";
+	call commit( $connection, $msg );
+	if( $rb-results//self::xnm:error ) {
+		expr "[LOG] MSG#ERR066 Rollback nicht erfolgreich."; expr "\n";
+	} else {
+		expr "[LOG] MSG#OK066 Rollback erfolgreich."; expr "\n";
+	}
+}
+
+template commit ( $connection, $msg = "\tRadius Proxy Script commit." ) {
+	expr "Committing..."; expr "\n";
+	var $commit-configuration = <commit-configuration> {
+		if ( $msg ) {
+			<log> $msg;
+		}
+	}
+	var $commit-results = jcs:execute($connection, $commit-configuration);
+	if( $commit-results//self::xnm:error ) {
+		expr "[LOG] MSG#ERR067 Commit konnte nich durchgefuehrt werden."; expr "\n";
+		for-each ( $commit-results//self::xnm:error ) {
+			expr "\t -> " _ . _ "\n";
+		}
+		call close( $connection );
+		<xsl:message terminate="yes"> "Commit konnte nich durchgefuehrt werden.";
+	}
+	set $didCommit = true();
+	set $commitCount = $commitCount + 1;
+}
+
+template commit-and-quit ( $connection, $msg ) {
+	call commit( $connection, $msg );
+	var $unlock-results = jcs:execute( $connection, $unlockRpc );
+	expr "Unlocked the configuration.\n";
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		expr $msg;
+		call close( $connection );
+		<xsl:message terminate="yes"> $msg;
+	}
+}
+
+template checkPPP ( $connection ) {
+	expr "\n#Test RADIUS"; expr "\n";
+	var $AAATest_LineID = "DEU.DTAG.BICOTEST01";
+	var $rpc = <get-ppp-user-aaa-test-result> {
+		<user> "test";
+		<password> "test";
+		<agent-remote-id> $AAATest_LineID;
+	};
+	var $uselessFirstTestResults = jcs:execute( $connection, $rpc );
+	var $testResults = jcs:execute( $connection, $rpc );
+	if( $testResults//self::xnm:error ) {
+		expr "MSG#ERR021 AAA-Test nicht erfolgreich"; expr "\n";
+		for-each ( $testResults//self::xnm:error ) {
+			expr " MSG#Error: " _ .;
+		}
+	} else if ( $testResults/aaa-test-status == "Authentication Deny" ) {
+		expr "MSG#ERR021 AAA-Test nicht erfolgreich"; expr "\n";
+		/*expr " AAA-Test: Authentication denied"; expr "\n";*/
+		expr " AAA-Test: '" _ $testResults/aaa-test-status[2] _ "'"; expr "\n";
+		if ( $testResults/aaa-test-status[2] == "Reason : timeout" ) {
+			expr "PFS ist nicht erreichbar."; expr "\n";
+		}
+	} else if ( $testResults/aaa-test-status == "Authentication Grant" ) {
+		expr "MSG#OK03 AAA-Test erfolgreich"; expr "\n";
+	}
+}

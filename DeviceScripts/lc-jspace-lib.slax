@@ -1,0 +1,245 @@
+/*
+ * Filename      : lc-jspace-lib.slax
+ * Author        : Andrew Sharp asharp@juniper.net
+ * Platform      : Junos Space
+ * Release       : 13.1P2
+ * Version       : 1.0
+ * SVN INFO      :
+ *
+ * $Rev: 36133 $
+ * $Date: 2014-04-24 14:14:09 +0100 (Thu, 24 Apr 2014) $
+ * $Author: asharp $
+ * 
+ * Description   : Junos Space Library.
+ *
+ */
+
+/* @CONTEXT = "/device[name='hidden']" */
+/* @NAME = "Junos Space Library" */
+/* @DESCRIPTION = "Library file for Junos Space" */
+/* @ISLOCAL = "true" */
+
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns str = "http://exslt.org/strings";
+ns jspace = "http://jspace-utils/asharp@juniper.net";
+ns func extension = "http://exslt.org/functions";
+ns exsl extension = "http://exslt.org/common";
+
+/* ********* */
+/* FUNCTIONS */
+/* ********* */
+/* jspace:parse-context-phy( $regex , $context );
+ *
+ *  Parse the context for physical interfaces, and return 
+ *  an array of those interfaces.
+ *  The first interface is at $parsed-data[2] and onwards.
+ *  $regex = regular expression to be applied on context
+ *  $context = the context that needs to be parsed
+*/
+<func:function name="jspace:parse-context-phy">
+{
+    param $regex;
+    param $context;
+  
+    var $regex-data = jcs:regex( $regex , $context );
+    var $parsed-data = jcs:split("name=",str:replace(str:replace($regex-data[2]," or ",""),"\"",""));
+
+    <func:result select=" $parsed-data ">;
+}
+
+/* jspace:parse-context-log( $regex , $context );
+ *
+ * Parse the context for physical interfaces, and 
+ * logical interfaces, and return an array of those
+ * interfaces.
+*/
+<func:function name="jspace:parse-context-log">
+{
+    param $regex;
+    param $context;
+    
+    var $physicalinterfaces =jcs:split("|",$context);
+    
+    <func:result select=" $physicalinterfaces ">;
+}
+
+/* jspace:parse-context-chassis( $regex , $context );
+ *
+ *  Parse the context for chassis information. 
+ */
+<func:function name="jspace:parse-context-chassis">
+{
+    param $regex;
+    param $context;
+
+    var $regex-data = jcs:regex( $regex , $context );
+    
+    <func:result select=" $regex-data[2] ">;
+}
+
+/* jspace:parse-context-chassis-submod( $regex , $context );
+ *
+ *  Parse the context for chassis information.
+ * Array contains: 
+ * [2] chassis-module
+ * [3] chassis-sub-module 
+ */
+<func:function name="jspace:parse-context-chassis-submod">
+{
+    param $regex;
+    param $context;
+
+    var $regex-data = jcs:regex( $regex , $context );
+    
+    <func:result select=" $regex-data ">;
+}
+
+
+
+/* jspace:parse-context-chassis-subsubmod( $regex , $context );
+ *
+ *  Parse the context for chassis information.
+ * Array contains: 
+ * [2] chassis-module
+ * [3] chassis-sub-sub-module 
+ */
+<func:function name="jspace:parse-context-chassis-subsubmod">
+{
+    param $regex;
+    param $context;
+
+    var $regex-data = jcs:regex( $regex , $context );
+    
+    <func:result select=" $regex-data ">;
+}
+
+
+/* jspace:html-style ( $type );
+ *
+ * Select the style sheet to apply
+*/
+<func:function name="jspace:html-style">
+{
+    param $type;
+
+    var $style = {
+    	if ( $type = 1 ) {
+    	    <style type="text/css"> {
+	        expr "body {font-family: Verdana,Georgia,Arial,sans-serif; font-size: 12px; color: #000; border-style: solid; border-color: transparent; background-color: transparent}";
+	        expr "td {  font-family: Verdana,Georgia,Arial,sans-serif; font-size: 12px; color: #000}";
+	        expr "p {   font-family: Verdana,Georgia,Arial,sans-serif; font-size: 12px; color: #000}";
+	    }
+    	}
+    	else if ( $type = 2 ) {
+    	    <style type="text/css"> {
+	        expr "body {font-family: Verdana,Georgia,Arial,sans-serif; font-size: 12px; color: #000; border-style: solid; border-color: transparent; background-color: transparent}";
+	        expr "td {  font-family: Verdana,Georgia,Arial,sans-serif; font-size: 12px; color: #000}";
+	        expr "p {   font-family: Verdana,Georgia,Arial,sans-serif; font-size: 14px; color: #000}";
+	    }
+    	}
+    	else if ( $type = 3 ) {
+    	    <style type="text/css"> {
+    	        expr "body { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;border-style: solid;border-color: transparent;background-color: transparent}";
+    	        expr "td { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "p { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+		expr "table { font-size: 0.75em;border-collapse: collapse;width: 99% }";
+		expr "#tableheader { font-weight: bolder;background-color: #7592A9;color: #fff }";
+		expr "#celltitle { font-weight: bolder }";
+		expr "#celltitleright { text-align: right;padding: 5px;font-weight: bolder }";
+		expr "#cellleft { text-align: left;padding: 5px }";
+		expr "#cellright { text-align: right;padding: 5px }";
+	    }
+    	}
+    	else if ( $type = 4 ) {
+    	    <style type="text/css"> {
+    	        expr "body { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;border-style: solid;border-color: transparent;background-color: transparent}";
+    	        expr "td { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "p { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "table { font-size: 0.75em;border-collapse: collapse;width: 99% }";
+    	        expr "#tableheader { font-weight: bolder;text-align: center;background-color: #7592A9;color: #fff }";
+    	        expr "#cellcentered { text-align: center; }";
+    	        expr "#cellwarning { text-align: center; background-color: #ff0000; color: #fff; font-weight: bolder; }";
+	    }
+    	}
+    	else if ( $type = 5 ) {
+    	    <style type="text/css"> {
+    	        expr "body { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;border-style: solid;border-color: transparent;background-color: transparent}";
+    	        expr "td { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "p { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "table { font-size: 0.75em;border-collapse: collapse;width: 99% }";
+    	        expr "#tableheader { font-weight: bolder;text-align: center;background-color: #7592A9;color: #fff }";
+    	        expr "#celltitle { font-weight:bolder;background-color:#7592A9;color:#fff }";
+	    }
+    	}
+    	else if ( $type = 6 ) {
+    	    <style type="text/css"> {
+    	        expr "body { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;border-style: solid;border-color: transparent;background-color: transparent}";
+    	        expr "td { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "p { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "table { font-size: 0.75em;border-collapse: collapse;width: 99% }";
+    	        expr "#tableheader { font-weight: bolder;text-align: center;background-color: #7592A9;color: #fff }";
+    	        expr "#tableheaderleft { font-weight: bolder;text-align: left;background-color: #7592A9;color: #fff }";
+    	        expr "#tableheaderright { font-weight: bolder;text-align: right;background-color: #7592A9;color: #fff }";
+    	        expr "#tablereverse { font-size: 16px; font-weight: bolder;text-align: left;background-color: #7592A9;color: #fff }";
+    	        expr "#celltitle { font-weight: bolder }";
+    	        expr "#cellwarningleft { text-align: left; background-color: #ff0000; color: #fff; font-weight: bolder; }";
+    	        expr "#cellamberleft { text-align: left; background-color: #f87431; color: #fff; font-weight: bolder; }";
+    	        expr "#paddedcell { padding: 5px }";
+    	        expr "#paddedcellleft { padding: 5px; text-align: left }";
+    	        expr "#paddedcellright { padding: 5px; text-align: right }";
+    	        expr "#paddedcellcenter { padding: 5px; text-align: center }";
+    	        expr "#paddedheader { font-weight: bolder; background-color: #7592A9; color: #fff; padding: 5px }";
+    	        expr "#right {text-align: right }";
+    	        expr "#center {text-align: center}";
+    	        expr "#left {text-align: left}";
+    	        expr "#pheader { font-weight: bolder; background-color: #7592A9; color: #fff }";
+    	        expr "#pheadererror { font-size: 14px; font-weight: bolder; background-color: #7592A9; color: #fff }";
+    	        
+	    }
+    	}
+    	else if ( $type = 7 ) {
+    	    <style type="text/css"> {
+    	        expr "body { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;border-style: solid;border-color: transparent;background-color: transparent}";
+    	        expr "td { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "p { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "table { font-size: 0.75em;border-collapse: collapse;width: 99% }";
+    	        expr "#tableheader { font-weight: bolder;text-align: center;background-color: #7592A9;color: #fff }";
+    	        expr "#celltitle { font-weight: bolder }";
+    	        expr "#celltitleright { text-align: right;padding: 5px;font-weight: bolder }";
+	    }
+    	}
+    	else if ( $type = 8 ) {
+    	    <style type="text/css"> {
+    	        expr "body { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;border-style: solid;border-color: transparent;background-color: transparent}";
+    	        expr "td { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "p { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "#pheader { font-weight: bolder; background-color: #7592A9; color: #fff }";
+    	        expr "#configlines { white-space: pre;text-align: left;line-height: 60% }";
+	    }
+    	}
+    	else if ( $type = 9 ) {
+    	    <style type="text/css"> {
+    	        expr "body { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;border-style: solid;border-color: transparent;background-color: transparent}";
+    	        expr "td { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "p { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "table { font-size: 0.75em;border-collapse: collapse;width: 99% }";
+    	        expr "#tableheader { font-size: 16px; font-weight: bolder;text-align: left;background-color: #7592A9;color: #fff }";
+    	        expr "#tableheaderleft { font-weight: bolder;text-align: left;background-color: #7592A9;color: #fff }";
+	    }
+    	}
+    	else if ( $type = 10 ) {
+    	    <style type="text/css"> {
+    	        expr "body { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;border-style: solid;border-color: transparent; background-color: #DFE8F6}";
+    	        expr "td { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "p { font-family: Verdana, Georgia, Arial, sans-serif;font-size: 12px;color:#000;}";
+    	        expr "#pheader { font-weight: bolder; background-color: #7592A9; color: #fff }";
+    	        expr "#configlines { font-family: \"Courier New\", Courier, monospace;white-space: pre;text-align: left;line-height: 60% }";
+	    }
+    	}
+    }
+    
+    <func:result select=" $style ">;
+}

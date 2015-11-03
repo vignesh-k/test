@@ -1,0 +1,272 @@
+/* 
+	Script to receive the versions of Juniper's iCEAAA Scripts across multiple BNGs.
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0c
+	Date: 08.05.2014
+	Last Modified By: bcersows
+	###Script_showICEAAAScriptsVersions.slax;v1.0c;2014.05.08
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns date = "http://exslt.org/dates-and-times";
+ns str = "http://exslt.org/strings";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "NE Scripts - Show iCEAAA Scripts Versions" */
+/* @DESCRIPTION = "Script to receive the versions of Juniper's iCEAAA Scripts." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'runShowScript','selectionvalues':'Yes,No'}]" */
+/* @PASSDEVICECREDENTIALS = "true" */
+/* @PROMOTE = "yes" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+	<argument> {
+		<name> "runShowScript";
+		<description> "If 'Yes', the Script 'iceaaa-show-version' will be run to show the versions of all Scripts. Attention, this might take a long time! Else only its header will be used. to display the versions.";
+	}
+}
+param $CONTEXT;
+param $runShowScript;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	/*mvar $results;*/
+	
+	mvar $localtime = date:date-time();
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	mvar $hostname;       /* credentials of user@ip           */
+	mvar $splitHostname;  /* array of user and ip credentials */
+	mvar $ip;             /* credentials ip address           */
+	mvar $user;           /* credentials username             */
+	mvar $password;       /* credentials password             */
+	
+	/* Split interfaces and Credentials */
+	var $devices = jcs:split("\\|", $CONTEXT);
+	var $splitCredentials = str:split( $credentials , "\\;" );
+	
+	/* Push the devices and according credentials into one node-set. */
+	var $deviceCredentials := {
+		for-each ( $devices ) {
+			var $position = position();
+			<device> {
+				<name> .;
+				<credentials> $splitCredentials[ $position ];
+			}
+		}
+	}
+	
+	var $myDevice = {
+		for-each ( $deviceCredentials/device/name ) {
+			<xsl:sort>;
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", . )[2];
+			if ( position() != last() ) {
+				expr ", ";
+			}
+		}
+	}
+	
+	var $opRpc = <command> "op iceaaa-show-version md5 true";
+	var $myFileRPC = <file-show> {
+		<filename> "/var/db/scripts/op/iceaaa-show-version.slax";
+	}
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				/*copy-of bcersows:insertCurrentTime();*/
+				
+				copy-of bcersows:insertCompletionTest();
+				
+				/*copy-of bcersows:insertSoftwareInformation( $connection );*/
+				
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "iCEAAA Scripts Versions"; }
+						copy-of bcersows:insertDownloadButton( "resultsTable", "iCEAAAVersionsOutput" );
+					}
+					
+					/* Table to have something to export. */
+					<table id="resultsTable" class="wide"> {
+						<tr> {
+							<th style="text-align: left;"> "Device";
+							if ( $runShowScript == "Yes" ) {
+								<th style="text-align: left;"> "Script name";
+								<th style="text-align: left;"> "RE";
+								<th style="text-align: left;"> "Type";
+								<th style="text-align: left;"> "Version";
+								<th style="text-align: left;"> "MD5";
+								expr "Script versions according to the iceaaa-show-version outputs.";
+							} else {
+								<th style="text-align: left;"> "Versions";
+								expr "Script versions according to the header of the iceaaa-show-version.";
+							}
+						}
+						for-each ( $deviceCredentials/device ) {
+							<xsl:sort>;
+							/* Using the count of unique devices found, the correct connection */
+							/* parameters to be used can be derived from $splitCredentials     */
+							var $splitCredential = str:split( ./credentials, "\\:" );
+							
+							set $hostname = $splitCredential[1];
+							set $password = $splitCredential[2];
+							set $splitHostname = str:split( $hostname[1] , "\@");
+							set $user = $splitHostname[1];
+							set $ip = $splitHostname[2];
+							var $dev = jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", ./name )[2];
+							
+							var $connection = jcs:open( $ip , $user , $password );
+							
+							if ( $connection && !$connection//self::xnm:error ) {
+								if ( $runShowScript == "Yes" ) {	/* Run iceaaa-show-version and output results. */
+									/* Initialize more needed variables for executing Script. */
+									var $replaceFrom := {
+										<string> "-op ";
+										<string> "-event ";
+										<string> "-commit ";
+										<string> "\t";
+										<string> "\n";
+										<string> "\r";
+									}
+									mvar $prefix = " ";
+									var $opResult = jcs:execute( $connection, $opRpc );
+									if( $opResult//self::xnm:error ) {
+										<tr> {
+											<td> $dev;
+											<td> "Error while getting file.";
+											<td> $opResult//self::xnm:error;
+										}
+									} else {
+										var $wholeDeviceInformation := <device> {
+											<name> $dev;
+											for-each( $opResult/../output ) {
+												mvar $line = .;
+												if ( position() == 1 ) {
+													<wholeVersion> $line;
+												} else {
+													/*if ( not( starts-with( $line, "---" ) ) and not( matches( $line, "[ \t]*Type[ \t]*Script[ \t]*Version[ \t]*" ) ) ) {*/
+													if ( contains( $line, "---" ) ) {
+													} else if ( contains( $line, "Type" ) and contains( $line, "Script" ) and contains( $line, "Version" ) ) {
+													} else if ( contains( $line, "Compare md5 checksums with expected for version " ) ) {
+													} else {
+														/* Put a prefix in front of the lines, depending on which RE they are on. */
+														if ( contains( $line, "re0:" ) ) {
+															set $prefix = "re0 ";
+														} else if ( contains( $line, "re1:" ) ) {
+															set $prefix = "re1 ";
+														} else {
+															<oneScript> {
+																<re> $prefix;
+																var $inline = str:replace( $line, $replaceFrom/string, "" );
+																/*var $inline = $line;*/
+																var $splitted = str:split( $inline );
+																<type> $splitted[1];
+																<name> $splitted[2];
+																<version> $splitted[3];
+																<md5> $splitted[4];
+															}
+														}
+													}
+												}
+											}
+										}
+										<tr> {
+											<th> $wholeDeviceInformation/device/name;
+											<th> $wholeDeviceInformation/device/wholeVersion;
+										}
+										for-each ( $wholeDeviceInformation/device/oneScript ) {
+											<xsl:sort select="name">;
+											<tr> {
+												<td> $dev;
+												<td> ./name _ " ";
+												<td> ./re _ " ";
+												<td> ./type _ " ";
+												<td> ./version _ " ";
+												if ( contains( ./md5, "ok" ) ) {
+													<td class="infoError alignCenter"> ./md5 _ " ";
+												} else {
+													<td class="majorError alignCenter"> ./md5 _ " ";
+												}
+											}
+										}
+									}
+								} else {	/* Only check the version in the header of iceaaa-show-version */
+									<tr> {
+										<td> $dev;
+										var $myFileResult = jcs:execute( $connection, $myFileRPC );
+										if( $myFileResult//self::xnm:error ) {
+											<td> "Error while getting file.";
+										} else {
+											<td> jcs:regex( "[.\s\r\n\t]* \* Build[ \t]+\: ([\.a-zA-Z0-9]+)[.\s\r\n\t]*", $myFileResult )[2];
+										}
+									}
+								}
+							} else {
+								<tr> {
+									<td> $dev;
+									<td> "Could not open connection.";
+								}
+							}
+							set $unlock-results = jcs:execute( $connection, "unlock-database" );
+							expr jcs:close( $connection );
+						}
+					}
+					
+					/* Make doubles invisible, but only when using full output. */
+					if ( $runShowScript == "Yes" ) {
+						<script> {
+							expr "removeMultiLines( 'resultsTable', 0 );";
+							expr "removeMultiLines( 'resultsTable', 1 );";
+						}
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					<span class="left italic unselectable"> "vs. 1.0c";
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+			}
+		}
+	}	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}

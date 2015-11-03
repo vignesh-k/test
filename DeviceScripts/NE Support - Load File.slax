@@ -1,0 +1,314 @@
+/* 
+	Script to read out a file from the BNG.
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0
+	Date: 06.03.2015
+	Last Modified By: bcersows
+	###NE Support - Load File.slax;v1.0;2015.03.06
+*/
+
+/*
+	Changelog:
+	----------
+	1.0; 06.03.2015: 
+		- First version.
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns date = "http://exslt.org/dates-and-times";
+ns str = "http://exslt.org/strings";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device[matches(name, '\w{3}J\d{2,3}') or matches(name, '^(bng|BNG).*$')]" */
+/* @NAME = "NE Support - Load File" */
+/* @DESCRIPTION = "Script to read out a file from the BNG." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'file','defaultvalue':'Please specify file name.'},{'name':'optionalPath','defaultvalue':''}]" */
+/* @PASSDEVICECREDENTIALS = "true" */
+/* @PROMOTE = "yes" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+	<argument> {
+		<name> "file";
+		<description> "File to show.";
+	}
+	<argument> {
+		<name> "optionalPath";
+		<description> "If a path different from '/var/log/' is wanted. Optional.";
+	}
+}
+param $CONTEXT;
+param $file;
+param $optionalPath;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	/*mvar $results;*/
+	
+	mvar $localtime = date:date-time();
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	mvar $hostname;       /* credentials of user@ip           */
+	mvar $splitHostname;  /* array of user and ip credentials */
+	mvar $ip;             /* credentials ip address           */
+	mvar $user;           /* credentials username             */
+	mvar $password;       /* credentials password             */
+	
+	/* Split interfaces and Credentials */
+	var $devices = jcs:split("\\|", $CONTEXT);
+	var $splitCredentials = str:split( $credentials , "\\;" );
+	
+	/* Push the devices and according credentials into one node-set. */
+	var $deviceCredentials := {
+		for-each ( $devices ) {
+			var $position = position();
+			<device> {
+				<name> .;
+				<credentials> $splitCredentials[ $position ];
+			}
+		}
+	}
+	
+	var $myDevice = {
+		for-each ( $deviceCredentials/device/name ) {
+			<xsl:sort>;
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", . )[2];
+			if ( position() != last() ) {
+				expr ", ";
+			}
+		}
+	}
+	
+	var $path = {
+		if ( jcs:empty( $optionalPath ) ) {
+			expr "/var/log/";
+		} else {
+			expr $optionalPath;
+			var $substr = substring( $optionalPath, string-length( $optionalPath ) );
+			if ( $substr != '/' and $substr != '\\' ) {
+				expr '/';
+			}
+		}
+	}
+	var $filename = $file;
+	var $myRPC = <file-show> {
+		<filename> $path _ $filename;
+	}
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+				<style> {
+					<xsl:text disable-output-escaping="yes">
+						".tableSaver {
+							width: 100%;
+							overflow: auto;
+						}
+						.tableSaver table {
+							white-space: nowrap;
+						}
+						.tableSaver table td, .tableSaver table th {
+							padding-left: 5px;
+						}
+						
+						.btn {
+							background-color: #337ab7;
+							border-color: #2e6da4;
+							color: #fff;
+							-moz-user-select: none;
+							background-image: none;
+							border: 1px solid transparent;
+							cursor: pointer;
+							display: inline-block;
+							font-weight: 400;
+							margin-bottom: 0;
+							text-align: center;
+							vertical-align: middle;
+							white-space: nowrap;
+							
+							border-radius: 3px;
+							font-size: 12px;
+							line-height: 1.5;
+							padding: 5px 10px;
+						}
+						.btn:hover {
+							background-color: #286090;
+							border-color: #204d74;
+							color: #fff;
+						}"
+					;
+				}
+				<script> {
+					<xsl:text disable-output-escaping="yes">
+						"function downloadFile( fileContent, fileName ) {
+							if ( isIE() ) {
+								var greyBack = document.createElement('div');
+								greyBack.setAttribute( 'id', 'greyBack' ); greyBack.setAttribute( 'class', 'greyBack' ); greyBack.setAttribute( 'className', 'greyBack' );
+								document.body.appendChild( greyBack );
+								var popupWindow = document.createElement('div');
+								popupWindow.setAttribute( 'id', 'popupWindow' ); popupWindow.setAttribute( 'class', 'popupWindow' ); popupWindow.setAttribute( 'className', 'popupWindow' ); 
+								var element = document.createElement('a'); element.innerHTML = 'Close';
+						
+								element.setAttribute( 'href', '#' ); element.onclick = function() { document.body.removeChild( document.getElementById('greyBack') );
+								document.body.removeChild( document.getElementById('popupWindow') ); return false; };
+								element.setAttribute( 'class', 'button right' ); element.setAttribute( 'className', 'button right' );
+								popupWindow.appendChild( element );
+								element = document.createElement('h3'); element.innerHTML = 'As IE sucks, I will print the output here.';
+								popupWindow.appendChild( element );
+								element = document.createElement('p'); var resultArray = result.split('\\n'); element.innerHTML = '';
+								for ( it0 = 0; it0 != resultArray.length; it0++ ) { 
+									element.innerHTML += resultArray[ it0 ];
+									if ( it0 != resultArray.length - 1 ) { element.appendChild( document.createElement('br') ) }
+								}
+								popupWindow.appendChild( element ); 
+								element.setAttribute( 'style', 'border: dashed thin; margin-right: 5px;' ); element.style.border = 'dashed thin'; element.style.marginRight = '5px';
+								document.body.appendChild( popupWindow );
+							} else {
+								var csvContent = 'data:text/plain;charset=utf-8,';		
+								var encodedUri = encodeURIComponent(fileContent);
+								var link = document.createElement('a');
+								link.setAttribute('href', csvContent + encodedUri);
+								link.setAttribute('download', fileName);
+								document.body.appendChild( link );
+								link.click();
+								document.body.removeChild( link );
+							}
+						}
+						function byteLength(str) {
+							var s = str.length;
+							for (var i=str.length-1; i>=0; i--) {
+								var code = str.charCodeAt(i);
+								if (code > 0x7f && code <= 0x7ff) s++;
+								else if (code > 0x7ff && code <= 0xffff) s+=2;
+								if (code >= 0xDC00 && code <= 0xDFFF) i--;
+							}
+							return s;
+						}"
+					;
+				}
+			}
+			<BODY> {
+
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				
+				copy-of bcersows:insertCompletionTest();
+				
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "File Result"; }
+					}
+					
+					if ( jcs:empty( $filename ) or $filename == 'Please specify file name.' ) {
+						<p class='majorError'> {
+							expr 'No file name specified.';
+						}
+					} else {
+						for-each ( $deviceCredentials/device ) {
+							<xsl:sort>;
+							/* Using the count of unique devices found, the correct connection */
+							/* parameters to be used can be derived from $splitCredentials     */
+							var $splitCredential = str:split( ./credentials, "\\:" );
+							
+							set $hostname = $splitCredential[1];
+							set $password = $splitCredential[2];
+							set $splitHostname = str:split( $hostname[1] , "\@");
+							set $user = $splitHostname[1];
+							set $ip = $splitHostname[2];
+							var $dev = jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", ./name )[2];
+							
+							var $connection = jcs:open( $ip , $user , $password );
+							
+							<div> {
+								<p class='bold'> $dev _ "";
+								if ( $connection && !$connection//self::xnm:error ) {
+									<div> {
+										mvar $myResult = jcs:execute( $connection, $myRPC );
+										if( $myResult//self::xnm:error ) {
+											<p> "Error while requesting file.";
+										} else {
+											set $myResult = str:replace( $myResult, '\n', '\\r\\n' );
+											set $myResult = str:replace( $myResult, '"', '\"' );
+											/* Escape single quote more as single quotes are used to insert the content into JS. */
+											set $myResult = str:replace( $myResult, "'", "\\'" );
+											
+											var $outputFileName = $dev _ "_file_" _ $filename _ "_" _ date:year() _ "" _ format-number( date:month-in-year(), "00" ) _ "" _ format-number( date:day-in-month(), "00" ) _".txt";
+											<p> {
+												<table class="twoColumnTable middle"> {
+													<tr> {
+														<td> { expr "File Path:"; }
+														<td> { expr $path; }
+													}
+													<tr> {
+														<td> { expr "File Name:"; }
+														<td> { expr $filename; }
+													}
+													<tr> {
+														<td> { expr "File Size (bytes, estimated):"; }
+														<td id='fileSize' _ $counter> { expr ' '; }
+													}
+												}
+											}
+											<script> {
+												expr "var dlContent_" _ $counter _ " = '" _ $myResult _ "';";
+												expr '\n';
+												expr "document.getElementById('fileSize" _ $counter _ "').innerHTML = byteLength( dlContent_" _ $counter _ " );";
+											}
+											<div class='btn' onclick="downloadFile( dlContent_" _ $counter _ ", '" _ $outputFileName _ "' );"> {
+												expr "Download " _ $dev;
+											}
+										}
+									}
+								} else {
+									<p> "Could not open connection.";
+								}
+							}
+							expr jcs:close( $connection );
+							
+							set $counter = $counter + 1;
+						}
+					}
+					/*copy-of bcersows:insertBackButton();*/
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					<span class="left italic unselectable"> "vs. 1.0";
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+			}
+		}
+	}	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}

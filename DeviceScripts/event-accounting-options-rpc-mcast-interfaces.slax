@@ -1,0 +1,534 @@
+version 1.0;   /* XML version not script version */
+
+/*
+ * Copyright (c) 2014, Juniper Networks, Inc.
+ * All rights reserved.
+ * Filename      : event-accounting-options-rpc-mcast-interfaces.slax
+ * Author        : Andre Stiphout <andre@juniper.net>
+ * Platform      : MX TRIO
+ * Release       : Junos 12.3+
+ * Version       : 1.01
+ * Date          : 2014-11-06 16:00
+ * Description   : Obtain pim/igmp ifl statistics and write into accounting-files
+ *
+ */
+
+/*
+ * The aim of the script is to retrieve those ifIndices of the interfaces that
+ * require monitoring. The ifIndices are used to get various igmp and pim
+ * interface and protocol statistics. The results are written directly into
+ * accounting-files.
+ *
+ * No parameters will be passed to the script.
+ * There are no version dependencies.
+ *
+ *  v0.90   Initial release.
+ *  v0.91   Merged 2 scripts as they both grepped ifIndexes for pim & igm ifls.
+ *  v0.92   Added additional error reporting using syslog, added comments.
+ *  v0.93   Added initial sleep to support staggered start.
+ *  v0.94   Removed a double for-each when retrieving the ifname/ifindex.
+ *  v0.95   Removed sleep. Added parameter to differentiate mcast stats for IGMP/PIM.
+ *  v0.96   Added Routing-instance awareness in accounting-records and logging.
+ *  v0.97   Added additional check to verify if the relevant routing-instance has been configured.
+ *  v1.00   Added ngtv_central routing-instance and renamed iptv_nextgen to ngtv_edge
+ *  v1.01   Added additional check to not query non-existing pim/igmp interfaces
+*/
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns ext = "http://xmlsoft.org/XSLT/namespace";
+ 
+import "../import/junos.xsl";
+
+/* returns a connection handle that is used to execute RPCs, used for entire script */
+var $mgd = jcs:open();
+
+match / {
+
+    <event-script-results> {
+
+        /* abort if no connection to local $mgd */
+        if ( $mgd/..//xnm:error ) {
+            call rpcFailure( $rpc = $mgd/.., $message = $script _ ": error connecting on mgd on this RE" );
+            <xsl:message terminate="yes"> ;
+        }
+
+        /* check current RE is master RE. Stop execution if not */
+        var $reStatus = { call checkMaster(); }
+
+        if ( $reStatus != "master" ) {
+            expr jcs:syslog( "daemon.error", $script _ ": script not running on master RE. Stopping execution" );
+            <xsl:message terminate="yes">;
+        }
+
+        /* get interface information for all interfaces */
+        var $getIfls = <get-interface-information>;
+        var $ifls = jcs:execute( $mgd, $getIfls );
+
+        if ($ifls/..//xnm:error) {
+            call rpcFailure( $rpc = $ifls/.., $message = $script _ ": error gathering interface information" );
+            <xsl:message terminate="yes"> ;
+        }
+
+        /* MSTV: verify the instance is active on this router */
+        var $getInstanceInfoMstv = <get-instance-information> {
+            <instance-name> "iptv_dservers";
+            <brief>;
+        }
+        var $instanceInfoMstv = jcs:execute( $mgd, $getInstanceInfoMstv );
+
+        if ( $instanceInfoMstv/..//xnm:error ) {
+            call rpcFailure( $rpc = $instanceInfoMstv/.., $message = $script _ ": error on show route instance brief: iptv_dservers" );
+
+        } else if ( not( jcs:empty ( $instanceInfoMstv/instance-core/instance-name ))) {
+
+            /* get logcal ifIndexes for PIM interfaces */
+            var $iflPimMsTV := { call getIflPim( $instance = "iptv_dservers", $ifls = $ifls ); }
+
+            /* remove for troubleshooting
+                for-each ( $iflPim/ifl ) {
+                    <output> "$iflPimName: " _ ifl/name;
+                    <output> "$iflPimIndex: " _ ifl/snmp-index;
+                }
+            */
+
+            /* create rpc and add accounting-records for PIM protocol stats */
+            call createRpcPimIfl( $ifIndexes = $iflPimMsTV, $instance = "iptv_dservers" );
+
+            /* create rpc and add accounting-records for PIM interface mcast stats */
+            call createRpcMcastIfl( $ifIndexes = $iflPimMsTV, $instance = "iptv_dservers", $interfaceType = "PIM" );
+        }
+
+        /* NGTV-edge: verify the instance is active on this router */
+        var $getInstanceInfoNgtvEdge = <get-instance-information> {
+            <instance-name> "ngtv_edge";
+            <brief>;
+        }
+        var $instanceInfoNgtvEdge = jcs:execute( $mgd, $getInstanceInfoNgtvEdge );
+
+        if ( $instanceInfoNgtvEdge/..//xnm:error ) {
+            call rpcFailure( $rpc = $instanceInfoNgtvEdge/.., $message = $script _ ": error on show route instance brief: ngtv_edge" );
+
+        } else if ( not( jcs:empty ( $instanceInfoNgtvEdge/instance-core/instance-name ))) {
+
+            /* get logcal ifIndexes for PIM interfaces */
+            var $iflPimNGTV := { call getIflPim( $instance = "ngtv_edge", $ifls = $ifls ); }
+
+            /* create rpc and add accounting-records for PIM protocol stats */
+            call createRpcPimIfl( $ifIndexes = $iflPimNGTV, $instance = "ngtv_edge" );
+
+            /* create rpc and add accounting-records for PIM interface mcast stats */
+            call createRpcMcastIfl( $ifIndexes = $iflPimNGTV, $instance = "ngtv_edge", $interfaceType = "PIM" );
+        }
+
+        /* NGTV-central: verify the instance is active on this router */
+        var $getInstanceInfoNgtvCentral = <get-instance-information> {
+            <instance-name> "ngtv_central";
+            <brief>;
+        }
+        var $instanceInfoNgtvCentral = jcs:execute( $mgd, $getInstanceInfoNgtvCentral );
+
+        if ( $instanceInfoNgtvCentral/..//xnm:error ) {
+            call rpcFailure( $rpc = $instanceInfoNgtvCentral/.., $message = $script _ ": error on show route instance brief: ngtv_central" );
+
+        } else if ( not( jcs:empty ( $instanceInfoNgtvCentral/instance-core/instance-name ))) {
+
+            /* get logcal ifIndexes for PIM interfaces */
+            var $iflPimNGTV := { call getIflPim( $instance = "ngtv_central", $ifls = $ifls ); }
+
+            /* create rpc and add accounting-records for PIM protocol stats */
+            call createRpcPimIfl( $ifIndexes = $iflPimNGTV, $instance = "ngtv_central" );
+
+            /* create rpc and add accounting-records for PIM interface mcast stats */
+            call createRpcMcastIfl( $ifIndexes = $iflPimNGTV, $instance = "ngtv_central", $interfaceType = "PIM" );
+        }
+
+        /* For all Routing-Instances: get logcal ifIndexes for IGMP interfaces */
+        var $iflIgmp := { call getIflIgmp( $ifls = $ifls ); }
+
+        /* remove for troubleshooting
+            for-each ( $iflIgmp/ifl ) {
+                <output> "$iflIgmpName: " _ ifl/name;
+                <output> "$iflIgmpIndex: " _ ifl/snmp-index;
+        */
+
+        /* For all Routing-Instances: create rpc and add accounting-records for IGMP protocol stats */
+        call createRpcIgmpIfl( $ifIndexes = $iflIgmp );
+
+        if ( not( jcs:empty ( $instanceInfoMstv/instance-core/instance-name))) {
+
+            /* create rpc and add accounting-records for IGMP interface mcast stats */
+            call createRpcMcastIfl( $ifIndexes = $iflIgmp, $instance = "iptv_dservers", $interfaceType = "IGMP" );
+        }
+
+        if ( not( jcs:empty ( $instanceInfoNgtvEdge/instance-core/instance-name ))) {
+
+            /* create rpc and add accounting-records for IGMP interface mcast stats */
+            call createRpcMcastIfl( $ifIndexes = $iflIgmp, $instance = "ngtv_edge", $interfaceType = "IGMP" );
+        }
+
+        if ( not( jcs:empty ( $instanceInfoNgtvCentral/instance-core/instance-name ))) {
+
+            /* create rpc and add accounting-records for IGMP interface mcast stats */
+            call createRpcMcastIfl( $ifIndexes = $iflIgmp, $instance = "ngtv_central", $interfaceType = "IGMP" );
+        }
+
+    }
+
+    /* closes the connection handle */
+    expr jcs:close( $mgd );
+}
+
+template createRpcMcastIfl( $ifIndexes, $instance, $interfaceType ) {
+
+    /* abort if no ifindexes provided */
+    if ( jcs:empty( $ifIndexes )) {
+        expr jcs:syslog( "daemon.error", $script _ ": no ifIndexes passed to createRpcMcastIfl()" );
+    }
+
+    /* abort if no instance provided */
+    if ( jcs:empty( $instance )) {
+        expr jcs:syslog( "daemon.error", $script _ ": no routing-instance passed to createRpcMcastIfl()" );
+    }
+
+    /* retrieve the multicast statistics */
+    var $getMcastStatInfo = <get-multicast-statistics-information> {
+        <instance> $instance;
+        <inet>;
+    }
+    var $mcastStatInfo = jcs:execute( $mgd, $getMcastStatInfo );
+
+    if ( $mcastStatInfo/..//xnm:error ) {
+        call rpcFailure( $rpc = $mcastStatInfo/.., $message = $script _ ": error on show mcast statistics for instance: " _ $instance );
+    }
+
+    /* assume there will be no failure on the RPC call */
+    mvar $rpcSuccess = true();
+
+    /* for all indexes that we previously retrieved */
+    for-each ( $ifIndexes/ifl ) {
+
+        var $ifl = .;
+
+        /* only execute if ifl has stats; necessary for IGMP interfaces as they are configured independent of routing-instance */
+        if ( $ifl/name == $mcastStatInfo/multicast-statistics/mc-stats-interface/interface-name ) {
+
+            /* create accounting-record for igmp interface statistics */
+            var $addAccountingRecord = <add-accounting-file-record> {
+                <file> "rpcStatMcastIfls";
+                <layout> "rpcMcastIfls";
+                <fields> "ifDescr,ifIndex,ipMRouteInterfaceHCInMcastOctets,ipMRouteInterfaceHCOutMcastOctets";
+                <data> 
+                    $ifl/name _ "," _
+                    $ifl/snmp-index _ "," _
+                    $mcastStatInfo/multicast-statistics/mc-stats-interface[ interface-name == $ifl/name ]/mc-input-kbytes _ "," _
+                    $mcastStatInfo/multicast-statistics/mc-stats-interface[ interface-name == $ifl/name ]/mc-output-kbytes;
+            }
+            var $accountingRecord = jcs:execute( $mgd, $addAccountingRecord );
+
+            if ( $accountingRecord/..//xnm:error ) {
+
+                call rpcFailure( $rpc = $accountingRecord/.., $message = $script _ ": error adding accounting record to file rpcStatMcastIfls" );
+     
+                expr jcs:syslog( "daemon.notice", $script _ ": " _ $addAccountingRecord );
+
+                /* record there is a failure on the RPC call */
+                set $rpcSuccess = false();
+            }
+        }
+    }
+
+    /* all being well log successful run of script */
+    if ( $rpcSuccess ) {
+        expr jcs:syslog( "daemon.notice", $script _ ": Multicast statistics for " _ $interfaceType _ " interfaces for " _ $instance _ " using RPC updated successfully" );
+    } else {
+        expr jcs:syslog( "daemon.notice", $script _ ": Multicast statistics for " _ $interfaceType _ " interfaces for " _ $instance _ " using RPC not updated successfully" );
+    }
+}
+
+template createRpcIgmpIfl( $ifIndexes ) {
+
+    /* abort if no ifindexes provided */
+    if ( jcs:empty( $ifIndexes )) {
+        expr jcs:syslog( "daemon.error", $script _ ": no ifIndexes passed to createRpcIgmpIfl()" );
+    }
+
+    /* assume there will be no failure on the RPC call */
+    mvar $rpcSuccess = true();
+
+    /* for all indexes that we previously retrieved */
+    for-each ( $ifIndexes/ifl ) {
+
+        var $ifl = .;
+
+        /* retrieve the igmp interface statistics */
+        var $getIgmpStatInfo = <get-igmp-statistics-information> {
+            <interface> $ifl/name;
+        }
+        var $igmpStatInfo = jcs:execute( $mgd, $getIgmpStatInfo );
+
+        if ( $igmpStatInfo/..//xnm:error ) {
+            call rpcFailure($rpc = $igmpStatInfo/.., $message = $script _ ": error on show igmp statistics " _ $ifl/name);
+        }
+
+        /* retrieve the igmp interface information */
+        var $getIgmpIflInfo = <get-igmp-interface-information> {
+            <interface-name> $ifl/name;
+            <detail>;
+        }
+        var $igmpIflInfo = jcs:execute( $mgd, $getIgmpIflInfo );
+
+        if ( $igmpIflInfo/..//xnm:error ) {
+            call rpcFailure($rpc = $igmpIflInfo/.., $message = $script _ ": error on show igmp interface " _ $ifl/name);
+        }
+
+        /* create accounting-record for igmp interface statistics */
+        var $addAccountingRecord = <add-accounting-file-record> {
+            <file> "rpcStatIgmpIfls";
+            <layout> "rpcIgmpIfls";
+            <fields> "ifDescr,ifIndex,igmpInterfaceJoins,igmpInterfaceGroups";
+            <data> 
+                $ifl/name _ "," _
+                $ifl/snmp-index _ "," _
+                format-number( $igmpStatInfo/mgm-statistics-interface/mgm-statistics-group/mgm-statistic[ statistic-name == "V2 Membership Report" ]/received-count + $igmpStatInfo/mgm-statistics-interface/mgm-statistics-group/mgm-statistic[ statistic-name == "V3 Membership Report" ]/received-count, "#" ) _ "," _
+                format-number( $igmpIflInfo/mgm-interface/mgm-group-count, "#" );
+        }
+        var $accountingRecord = jcs:execute( $mgd, $addAccountingRecord );
+
+        if ( $accountingRecord/..//xnm:error ) {
+
+            call rpcFailure($rpc = $accountingRecord/.., $message = $script _ ": error adding accounting record to file rpcStatIgmpIfls");
+
+            expr jcs:syslog( "daemon.notice", $script _ ": " _ $addAccountingRecord );
+
+            /* record there is a failure on the RPC call */
+            set $rpcSuccess = false();
+        }
+    }
+
+    /* all being well log successful run of script */
+    if ( $rpcSuccess ) {
+        expr jcs:syslog( "daemon.notice", $script _ ": IGMP interface statistics using RPC updated successfully" );
+    } else {
+        expr jcs:syslog( "daemon.notice", $script _ ": IGMP interface statistics using RPC not updated successfully" );
+    }
+}
+
+template getIflIgmp( $ifls ) {
+
+    /* retrieve igm interface configuration */
+    var $getConfiguration = <get-configuration database="committed" inherit="inherit"> {
+        <configuration> {
+            <protocols> {
+                <igmp>;
+            }
+        }
+    }
+    var $configIgmp = jcs:execute( $mgd, $getConfiguration );
+
+    if ( $configIgmp/..//xnm:error ) {
+        call rpcFailure( $rpc = $configIgmp/.., $message = $script _ ": error gathering igmp configuration" );
+    }
+
+    /* Add all interfaces to a node-set that have a configured igmp-interface (ge/xe/irb)
+     * and do not have a flag of iff-hardware-down or if-device-down;
+     * this prevents trying to receive values that do not exist (NaN or 0).
+     * In addition the interfaces must exist and this is verified by querying the snmp-index.
+     */
+    var $iflIgmpIndexes := {
+        for-each ( $configIgmp/protocols/igmp/interface[ starts-with( name, 'ge-' ) or starts-with( name, 'xe-' ) or starts-with( name, 'irb' )]) {
+            var $igmpIfIname = name;
+            if (( jcs:empty( $ifls/physical-interface/logical-interface[ name == $igmpIfIname ]/if-config-flags/iff-hardware-down )) and ( jcs:empty( $ifls/physical-interface/logical-interface[ name == $igmpIfIname ]/if-config-flags/iff-device-down )) and not (jcs:empty( $ifls/physical-interface/logical-interface[ name == $igmpIfIname ]/snmp-index ))) {
+                <ifl> {
+                    <name> name;
+                    <snmp-index> $ifls/physical-interface/logical-interface[ name == $igmpIfIname ]/snmp-index;
+                }
+            }
+        }
+    }
+
+    /* return node-set to calling template */
+    copy-of $iflIgmpIndexes;
+}
+
+template createRpcPimIfl( $ifIndexes, $instance ) {
+
+    /* error if no ifindexes provided */
+    if ( jcs:empty( $ifIndexes )) {
+        expr jcs:syslog( "daemon.error", $script _ ": no ifIndexes passed to createRpcPimIfl()" );
+    }
+
+    /* error if no instance provided */
+    if ( jcs:empty( $instance )) {
+        expr jcs:syslog( "daemon.error", $script _ ": no routing-instance passed to createRpcPimIfl()" );
+    }
+
+    /* assume there will be no failure on the RPC call */
+    mvar $rpcSuccess = true();
+
+    /* for all indexes that we previously retrieved */
+    for-each ( $ifIndexes/ifl ) {
+
+        var $ifl = .;
+
+        /* retrieve the pim interface statistics */
+        var $getPimStatInfo = <get-pim-statistics-information> {
+            <instance> $instance;
+            <interface> $ifl/name;
+            <inet>;
+        }
+        var $pimStatInfo = jcs:execute( $mgd, $getPimStatInfo );
+
+        if ( $pimStatInfo/..//xnm:error ) {
+            call rpcFailure( $rpc = $pimStatInfo/.., $message = $script _ ": error on show pim statistics for instance: " _ $instance );
+        }
+
+        /* create accounting-record for pim interface statistics */
+        var $addAccountingRecord = <add-accounting-file-record> {
+            <file> "rpcStatPimIfls";
+            <layout> "rpcPimIfls";
+            <fields> "ifDescr,ifIndex,pimStatV2HelloRcv,pimStatV2HelloSnd,pimStatV2HelloErr,pimStatV2RegisterRcv,pimStatV2RegisterSnd,pimStatV2RegisterErr,pimStatV2RegisterStopRcv,pimStatV2RegisterStopSnd,pimStatV2RegisterStopErr,pimStatV2JoinPruneRcv,pimStatV2JoinPruneSnd,pimStatV2JoinPruneErr,pimStatV2BootstrapRcv,pimStatV2BootstrapSnd,pimStatV2BootstrapErr,pimStatV2AssertRcv,pimStatV2AssertSnd,pimStatV2AssertErr";
+            <data> 
+                $ifl/name _ "," _
+                $ifl/snmp-index _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Hello" ]/received-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Hello" ]/sent-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Hello" ]/error-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Register" ]/received-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Register" ]/sent-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Register" ]/error-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Register Stop" ]/received-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Register Stop" ]/sent-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Register Stop" ]/error-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Join Prune" ]/received-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Join Prune" ]/sent-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Join Prune" ]/error-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Bootstrap" ]/received-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Bootstrap" ]/sent-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Bootstrap" ]/error-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Assert" ]/received-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Assert" ]/sent-count _ "," _
+                $pimStatInfo/statistics-family/pim-statistics-interface/pim-statistic[ statistic-name == "V2 Assert" ]/error-count;
+        }
+        var $accountingRecord = jcs:execute( $mgd, $addAccountingRecord );
+
+        if ( $accountingRecord/..//xnm:error ) {
+
+            call rpcFailure($rpc = $accountingRecord/.., $message = $script _ ": error adding accounting record to file rpcStatPimIfls");
+
+            expr jcs:syslog( "daemon.notice", $script _ ": " _ $addAccountingRecord );
+
+            /* record there is a failure on the RPC call */
+            set $rpcSuccess = false();
+         }
+    }
+
+    /* all being well log successful run of script */
+    if ( $rpcSuccess ) {
+        expr jcs:syslog( "daemon.notice", $script _ ": PIM interface statistics for " _ $instance _ " using RPC updated successfully" );
+    } else {
+        expr jcs:syslog( "daemon.notice", $script _ ": PIM interface statistics for " _ $instance _ " using RPC not updated successfully" );
+    }
+}
+
+template getIflPim( $instance, $ifls ) {
+
+    /* retrieve pim interface configuration */
+    var $getConfiguration = <get-configuration database="committed" inherit="inherit"> {
+        <configuration> {
+            <routing-instances> {
+                <instance> {
+                    <name> $instance;
+                    <protocols> {
+                        <pim>;
+                    }
+                }
+            }
+        }
+    }
+    var $configPim = jcs:execute( $mgd, $getConfiguration );
+
+    if ( $configPim/..//xnm:error ) {
+        call rpcFailure( $rpc = $configPim/.., $message = $script _ ": error gathering pim configuration for instance: " _ $instance );
+    }
+
+    /* Add all interfaces to a node-set that have a configured pim-interface (ge/xe/et)
+     * and do not have a flag of iff-hardware-down or if-device-down;
+     * this prevents trying to receive values that do not exist (NaN or 0).
+     * In addition the interfaces must exist and this is verified by querying the snmp-index.
+     */
+    var $iflPimIndexes := {
+        for-each ( $configPim/routing-instances/instance/protocols/pim/interface[ starts-with( name, 'ge-' ) or starts-with( name, 'xe-' ) or starts-with( name, 'et' )]) {
+            var $pimIfIname = name;
+            if ( jcs:empty( $ifls/physical-interface/logical-interface[ name == $pimIfIname ]/if-config-flags/iff-hardware-down ) and ( jcs:empty( $ifls/physical-interface/logical-interface[ name == $pimIfIname ]/if-config-flags/iff-device-down )) and not ( jcs:empty( $ifls/physical-interface/logical-interface[ name == $pimIfIname ]/snmp-index ))) {
+                <ifl> {
+                    <name> name;
+                    <snmp-index> $ifls/physical-interface/logical-interface[ name == $pimIfIname ]/snmp-index;
+                }
+            }
+        }
+    }
+
+    /* return node-set to calling template */
+    copy-of $iflPimIndexes;
+}
+
+template checkMaster() {
+
+    /* master-state is available natively when querying junos-context */
+    if ( $junos-context ) {
+        if ( $junos-context/re-master ) {
+          <output> "master";
+        }
+        else {
+           <output> "backup";
+        }
+    }
+    /* if not available, other means are used to determine mastership */
+    else {
+
+        var $getReInfo = <get-route-engine-information> ;
+        var $reInfo = jcs:execute( $mgd, $getReInfo );
+
+        if ( $reInfo/..//xnm:error ) {
+            call rpcFailure( $rpc = $reInfo/.., $message = $script _ ": error communicating to determine if master" );
+            <xsl:message terminate="yes"> ;
+        }
+
+        /* if there is only one RE then is has to be master */
+        if ( $reInfo/route-engine ) {
+            if ( count( $reInfo/route-engine ) == 1 ) {
+                <output> "master";
+            } else {
+
+                /* this command only works on master RE with MX chassis */
+                var $getChassisInfo = <get-chassis-inventory> ;
+                var $chassisInfo = jcs:execute( $mgd, $getChassisInfo );
+
+                if ($chassisInfo/..//xnm:error) { 
+                    call rpcFailure( $rpc = $reInfo/.., $message = $script _ ": error getting Chassis information." );
+                    <xsl:message terminate="yes"> ;
+                }
+
+                if ( $chassisInfo/chassis/serial-number ) {
+                    <output> "master";
+                } else {
+                    <output> "backup";
+                }
+            }
+        } else {
+            expr jcs:syslog( "daemon.error", $script _ ": ERROR, Unexpected response: " _ $reInfo );
+            <xsl:message terminate="yes">;
+        }
+    }
+}
+
+template rpcFailure( $rpc, $message = "Following errors occured while trying to gather data: ") {
+
+    expr jcs:syslog( "daemon.error", $message );
+
+    for-each ( $rpc//xnm:error ) {
+        expr jcs:syslog( "daemon.error", message );
+    }
+}

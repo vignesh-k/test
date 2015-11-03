@@ -1,0 +1,251 @@
+/*
+ * Filename      : Script_Event_doCommand.slax
+ * Author        : Bjoern Cersowsky
+ * Build         : release-20131016_1001
+ * Platform      : MX TRIO
+ * Release       : Junos 12.2+
+ * SVN INFO      :
+ * 
+ * Description   : huuuu
+ *
+ */
+ 
+ /*
+	Author: bcersows
+	Version: 1.0
+	Date: 21.02.2014
+	Last Modified By: bcersows
+	###Script_Event_doCommand_op.slax;v1.0;2014.02.21
+*/
+ 
+/* Junos Space specific context, name and description */
+/* @CONTEXT = "/device[name='BNGJMX4']" */
+/* @NAME = "131024 _ Do Command " */
+/* @DESCRIPTION = "Is nice!" */
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+
+ns str = "http://exslt.org/strings";
+
+import "../import/junos.xsl";
+
+/* This is an event script */
+
+var $arguments = {
+
+}
+/*param $command;
+param $additionalInfo;*/
+
+var $local = jcs:open();
+
+match / {
+	<op-script-results> {
+    /*<event-script-results> {*/
+    	
+    	/* abort if no connection to local mgd */
+		if ($local/..//xnm:error) {
+			call rpc_failure($rpc = $local/.., $message = "Error connecting on mgd on this RE");
+			<xsl:message terminate="yes"> ;
+		}
+
+		mvar $filename = "";
+		set $filename = "/var/home/space/doSomeAction";
+			
+		<output> "User: " _ $user _ ", time: " _ $filename _ "."; 
+			
+		var $read-rpc = {
+			<file-get> {
+				<filename> $filename;
+				<encoding> "ascii";
+			}
+		}
+		
+		var $re_status = { call is_master(); }
+		
+		/*for-each ( $junos-context/routing-engine-name/ ) {
+			<output> "Name: " _ name( . );
+		}*/
+		var $reCur = { if ( $junos-context/routing-engine-name == "re0" ) { expr "re0"; } else { expr "re1"; } }
+		var $reDest = { if ( $junos-context/routing-engine-name == "re0" ) { expr "re1"; } else { expr "re0"; } }
+		
+		<output> "Starts reading.. ";
+    	var $results = jcs:execute( $local , $read-rpc );
+    	if ( $results//self::xnm:error ) {
+			/* No command file -> exit */
+			<output> "No file!";
+			<output> $results//self::xnm:error;
+			<xsl:message terminate="yes"> ;
+		}
+				
+    	/*for-each ( str:split( $results/file-contents/text(), "\n" ) ) {
+			<output> "Is: " _ .; 
+		}*/
+		
+		var $remove-rpc_one = {
+			<file-delete> {
+				<path> "1re0:" _ $filename;
+				<purge>;
+			}
+		}
+    	var $remove-results_one = jcs:execute( $local , $remove-rpc_one );
+		if ( $remove-results_one//self::xnm:error ) {
+			<output> "Could not remove on RE0: ";
+			<output> $remove-results_one//self::xnm:error;
+		}
+		
+		var $remove-rpc_two = {
+			<file-delete> {
+				<path> "1re1:" _ $filename;
+				<purge>;
+			}
+		}
+    	var $remove-results_two = jcs:execute( $local , $remove-rpc_two );
+		if ( $remove-results_two//self::xnm:error ) {
+			<output> "Could not remove on RE1: ";
+			<output> $remove-results_two//self::xnm:error;
+		}
+		
+		for-each ( str:split( $results/file-contents/text(), "\n" ) ) {
+			var $cmd = .;
+			var $splitCmd = str:split( $cmd, ";" );
+			if ( $splitCmd[1] == "CreateSSH" ) {
+				
+				var $ip = $splitCmd[2];
+				var $sshKey = $splitCmd[3];
+				
+				/* ssh-keygen */
+				/* file copy /root/.ssh/id_rsa* re1:/root/.ssh */
+				
+				/* TODO: Keygen. */	
+				
+				var $sshFileName = "/var/home/space/known_hosts";
+				/*var $sshContent = "10.201.100.100 ssh-rsa AAAAB3NzaC1";*/
+				var $sshContent = $ip _ " ssh-rsa " _ $sshKey;
+				
+				var $sshReadRpc = {
+					<file-get> {
+						<filename> $sshFileName;
+						<encoding> "ascii";
+					}
+				}
+				var $sshReadResults = jcs:execute( $local , $sshReadRpc );
+				mvar $oldSshContent = ""; mvar $reallyWriteSSH = true();
+				if ( $sshReadResults//self::xnm:error ) { } else {
+					set $oldSshContent = $sshReadResults/file-contents/text() _ "\r\n";
+					/* TODO: Check if already there, if so, set $reallyWriteSSH to false(). */
+					if ( contains( $oldSshContent, $ip ) ) {
+						<output> "Already contains server " _ $ip _ ".";
+						set $reallyWriteSSH = false();
+					}
+				}
+				
+				if ( $reallyWriteSSH ) {
+					<output> "Configuring known_hosts.";
+					var $sshWriteRpc = <file-put> {
+						<filename> "re0:" _ $sshFileName;
+						<permission> "644";
+						<encoding> "ascii";
+						<delete-if-exist>;
+						<file-contents> $oldSshContent _ $sshContent;
+					}
+					var $sshWriteResults = jcs:execute( $local , $sshWriteRpc );
+					if ( $sshWriteResults//self::xnm:error ) { 
+						<output> "Error while writing known_hosts on RE0: " _ $sshWriteResults//self::xnm:error;
+					}
+					
+					var $sshWriteRpc_on1 = <file-put> {
+						<filename> "re1:" _ $sshFileName;
+						<permission> "644";
+						<encoding> "ascii";
+						<delete-if-exist>;
+						<file-contents> $oldSshContent _ $sshContent;
+					}
+					var $sshWriteResults_on1 = jcs:execute( $local , $sshWriteRpc_on1 );
+					if ( $sshWriteResults_on1//self::xnm:error ) { 
+						<output> "Error while writing known_hosts on RE1: " _ $sshWriteResults_on1//self::xnm:error;
+					}
+					
+					<output> "Wrote: ";
+					<output> $oldSshContent _ $sshContent;
+				
+				}
+			
+			} else {
+				<output> "Other command found.";
+			}
+
+		}
+		
+    	/* log successful run of script */
+    	var $syslog-message = "Command file found. Did some stuff.";
+		expr jcs:syslog("daemon.notice", $syslog-message);
+		
+		var $close-results = jcs:close( $local );
+		if ($close-results/..//xnm:error) {
+			call rpc_failure($rpc = $close-results/.., $message = "Error closing connection");
+    		<xsl:message terminate="yes"> ;
+		}
+	}
+}
+
+template is_master() {
+  if ( event-script-input/junos-context ) {
+    if ( event-script-input/junos-context/re-master ) {
+      <output> "master";
+    }
+    else {
+      <output> "backup";
+    }
+  }
+  else if ( commit-script-input/junos-context ) {
+    if ( commit-script-input/junos-context/re-master ) {
+      <output> "master";
+    }
+    else {
+      <output> "backup";
+    }
+  }
+  else if ( op-script-input/junos-context ) {
+    if ( op-script-input/junos-context/re-master ) {
+      <output> "master";
+    }
+    else {
+      <output> "backup";
+    }
+  }
+  else {
+    var $re_rpc = <get-route-engine-information> ;
+    var $re = jcs:execute($local, $re_rpc);
+    if ($re/..//xnm:error) {
+      call rpc_failure($rpc = $re/.., $message = "Error communicating to determine if master");
+      <xsl:message terminate="yes"> ;
+    }
+
+    /* if there is only one RE then is has to be master */
+    if ( $re/route-engine ) {
+      if ( count( $re/route-engine ) == 1 ) {
+        <output> "master";
+      }
+      /* if there is more than one RE this XPath statement is only true on the master RE */
+      else if ( $re/route-engine[mastership-state == "master"]/load-average-one ) {
+        <output> "master";
+      }
+      else {
+        <output> "backup";
+      }
+    }
+    else {
+      var $xml = { copy-of $re; }
+      <xsl:message terminate="yes"> "ERROR: Unexpected response: " _ $xml;
+    }
+  }
+}
+
+/*
+	10.201.100.100 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCorHEKBAovNSq4n59kZECfy3BrPg/dxqbPojnsf81RwoWWxCjM/4Kv2pMDdrPUorcpIU/QasLP2SgYE7m0ZfK3SQqdLewdxeMw8KSaQzEku8Qtqlw0m8Oo8HN8xxPGkNUqujQsnl9pbieZfAw1cWn7/UGzSAgnemeCtKlSUs1RVRnYfqHsbpd8CUVRBbzV5UNJRHV4Bx8khd+azguqQFlVQ1oUb/besZpkmps9AuZaLBuDi2R6QHkk0HfUiYPjEYZ7Qg3aKb4JGyPyRvzgJjnx3g1w99M2aq6ouU1PxvFz8piWoGiDlvmUc+Y62kAbSJa+8kn6SVYnxaRDSYKLGrp1
+*/

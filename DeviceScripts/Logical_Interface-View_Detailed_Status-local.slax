@@ -1,0 +1,814 @@
+/*
+ * Filename      : Logical_Interface-View_Detailed_Status-local.slax
+ * Author        : Andrew Sharp asharp@juniper.net
+ * Platform      : Junos Space
+ * Release       : 13.1P2
+ * Version       : 1.0
+ * SVN INFO      :
+ *
+ * $Rev: 36133 $
+ * $Date: 2014-04-24 14:14:09 +0100 (Thu, 24 Apr 2014) $
+ * $Author: asharp $
+ * 
+ * Description   : Show detailed interface information.
+ *
+ */
+ 
+version 1.1;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns exsl extension = "http://exslt.org/common";
+ns str = "http://exslt.org/strings";
+ns jspace = "http://jspace-utils/asharp@juniper.net";
+
+import "../import/junos.xsl";
+import "lc-jspace-lib.slax";
+
+/* @CONTEXT = "/device/configuration/interfaces/interface/unit" */
+/* @NAME = "View Status" */
+/* @DESCRIPTION = "Show detailed interface information." */
+/* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
+/* @ISLOCAL = "true" */
+/* @PASSDEVICECREDENTIALS = "true" */
+
+var $scriptname = "Logical_Interface-View_Detailed_Status-local.slax";
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "The context associated with this script.";
+	}
+}
+param $CONTEXT;
+
+var $get-interface-information-rpc;
+var $results;
+var $regex;
+var $result-regex;
+var $logical-interface;
+var $devicename;
+var $physintname;
+var $logintnames;
+var $splitCredentials; /* array of all credentials        */
+var $splitCredential;  /* array of one set of credentials */
+
+match / {
+	<op-script-results> {
+		mvar $count = "0";    /*count of devices    */
+		mvar $host-compare;   /* used for comparing */
+
+		mvar $hostname;       /* credentials of user@ip           */
+		mvar $splitHostname;  /* array of user and ip credentials */
+		mvar $ip;             /* credentials ip address           */
+		mvar $user;           /* credentials username             */
+		mvar $password;       /* credentials password             */
+
+		/* Split interfaces and Credentials */
+		var $interfaces = jcs:split( "\\|", $CONTEXT );
+		var $splitCredentials = str:split( $credentials , "\\;" );
+
+		<output> {
+			<HTML> {
+				<HEAD> {
+					<title> "Interface information:";
+					copy-of jspace:html-style("6");
+				}
+				<BODY> {
+					/* Loop through each physical interface*/
+					for-each ($interfaces) {
+						var $interface-regex = jcs:regex( "/device(\\[.*\\])/configuration/interfaces/interface(\\[.*\\])/unit(\\[.*\\])", (.) );
+						var $devicename = str:replace(str:replace($interface-regex[2],"[name=\"",""),"\"]","");
+						var $physintname = str:replace(str:replace(str:replace($interface-regex[3],"[name=",""),"]",""),"\"","");
+						var $logintnames = jcs:split("name=",str:replace(str:replace(str:replace(str:replace($interface-regex[4]," or ",""),"[",""),"]",""),"\"",""));
+	
+						/* Loop through each logical interface */
+						for-each ($logintnames) {
+							if ( position() > 1 ) {
+								var  $get-interface-information-rpc = <get-interface-information> {
+									<interface-name> $physintname _ "." _ (.);
+									<detail>;
+								}
+	
+								/* First time pass store the first devicename in $host-compare */
+								/* Increase the count of unique devices seen to 1              */
+								if ($count = "0") {
+										set $host-compare = $devicename;
+										set $count = $count + 1;
+								}
+								
+								/* If the devicename is different from the previous loop  */
+								/* then we must be using a new device, increase the count */
+								/* and save the current devicename as the host to compare */
+								if ( $host-compare != $devicename ) {
+										set $count = $count + 1;
+										set $host-compare = $devicename;
+								}
+								
+								/* Using the count of unique devices found, the correct connection */
+								/* parameters to be used can be derived from $splitCredentials     */
+								var $splitCredential = str:split( $splitCredentials[$count] , "\\:" );
+								set $hostname = $splitCredential[1];
+								set $password = $splitCredential[2];
+								set $splitHostname = str:split( $hostname[1] , "\@");
+								set $user = $splitHostname[1];
+								set $ip = $splitHostname[2];
+								var $connection = jcs:open( $ip , $user , $password );
+								/* abort if no connection to local mgd */
+								if ($connection/..//xnm:error) {
+									call rpc_failure($rpc = $connection/.., $message = "Error connecting on mgd on this RE");
+									<xsl:message terminate="yes"> ;
+								}
+								var $results = jcs:execute( $connection , $get-interface-information-rpc );
+								if ($results/..//xnm:error) {
+									call rpc_failure($rpc = $results/.., $message = "Error collecting interface information");
+									<xsl:message terminate="yes"> ;
+								}
+								var $close-results = jcs:close ( $connection );
+								if ($close-results/..//xnm:error) {
+									call rpc_failure($rpc = $close-results/.., $message = "Error closing connection.");
+									<xsl:message terminate="yes"> ;
+								}
+
+								<table border="1"> {
+									<colgroup> {
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+										<col width="5%">;
+									}
+									<tr> {
+										<td colspan="20" id="tableheaderleft"> {
+											expr "Detailed interface information for " _ $devicename _ " : " _ $physintname _ "." _ (.);
+										}
+									}
+									/* Walk the data and parse */
+									for-each( $results/logical-interface/descendant::* ) {
+										/* Interface name, index and generation */
+										if ( name() == "name" &&  name(..) != "lag-link" && name(..) != "lag-marker" ) {
+											<tr> {
+												<td colspan="20"> {
+													expr "Logical interface " _ ($results/logical-interface/name) _ " ";
+													expr "(Index " _ ($results/logical-interface/local-index) _ ") ";
+													expr "(SNMP ifIndex " _ ($results/logical-interface/snmp-index) _ ") ";
+													expr "(Generation " _ ($results/logical-interface/generation) _ ")";
+												}
+											}
+										}
+										/* Description */
+										if ( name() == "description" ) {
+											<tr> {
+												<td colspan="20"> {
+													expr "Description: " _ ($results/logical-interface/description);
+												}
+											}
+										}
+										/* Interface flags */
+										if ( name() == "if-config-flags" ) {
+											<tr> {
+												/* Traverse flags to get flag name.*/
+												<td colspan="20"> {
+													expr "Interface flags: ";
+													for-each ($results/logical-interface/if-config-flags/*) {
+														if ( name() != "internal-flags" ) {
+															var $myflag = substring-after( name() , "-" );
+															expr jcs:printf( "%jcs" , $myflag ) _ " ";
+														}
+														/* Watch for internal flags */
+														else if ( $results/logical-interface/if-config-flags/internal-flags ) {
+															expr "Internal: " _ ($results/logical-interface/if-config-flags/internal-flags) _ " ";
+														}
+													}
+												}
+											}
+										}
+										/* Link address */
+										if ( name() == "link-address" ) {
+											<tr> {
+												<td colspan="20"> {
+													/* 
+														 To handle different formats for IP-Header, VLAN-Tag etc.,  
+														 return the value of the junos:format attribute instead.
+													*/
+													expr ($results/logical-interface/link-address/@junos:format);
+												}
+											}
+										}
+										/* copy-tos-to-outer-ip-header */
+										if ( name() == "copy-tos-to-outer-ip-header" ) {
+											<tr> {
+												<td colspan="20"> {
+													expr "Copy-tos-to-outer-ip-header: " _ ($results/logical-interface/copy-tos-to-outer-ip-header);
+												}
+											}
+										}
+										/* gre-keepalive-configured */
+										if ( name() == "gre-keepalive-configured" ) {
+											<tr> {
+												<td colspan="20"> {
+													expr "Gre keepalives configured: " _ ($results/logical-interface/gre-keepalive-configured) _ ", ";
+													if ($results/logical-interface/gre-keepalive-adj-state) {
+														expr "Gre keepalives adjacency state: " _ ($results/logical-interface/gre-keepalive-adj-state);
+													}
+												}
+											}
+										}
+										/* Encapsulation */
+										if ( name() == "encapsulation" ) {
+											<tr> {
+												<td colspan="20"> {
+													expr "Encapsulation: " _ ($results/logical-interface/encapsulation);
+												}
+											}
+										}
+										/* Interface set */
+										if ( name() == "interface-set-name" ) {
+											<tr> {
+												<td colspan="20"> {
+													expr "Interface set: " _ ($results/logical-interface/interface-set-name);
+												}
+											}
+										}
+										/* Traffic Statistics */
+										if ( name() == "traffic-statistics" ) {
+											<tr> {
+												<td colspan="20" id="tableheaderleft"> {
+													expr "Traffic statistics:";
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Input Bytes";
+												}
+												<td colspan="16" id="paddedcell"> {
+													expr (./input-bytes);
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Output Bytes";
+												}
+												<td colspan="16" id="paddedcell"> {
+													expr (./output-bytes);
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Input Packets";
+												}
+												<td colspan="16" id="paddedcell"> {
+													expr (./input-packets);
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Output Packets";
+												}
+												<td colspan="16" id="paddedcell"> {
+													expr (./output-packets);
+												}
+											}
+											/* IPv6 transit statistics*/
+											if (./ipv6-transit-statistics) {
+												<tr> {
+													<td colspan="20" id="tableheaderleft"> {
+														expr "IPv6 transit statistics:";
+													}
+												}
+												<tr> {
+													<td colspan="4" id="paddedcellright"> {
+														expr "Input Bytes";
+													}
+													<td colspan="16" id="paddedcell"> {
+														expr (./ipv6-transit-statistics/input-bytes);
+													}
+												}
+												<tr> {
+													<td colspan="4" id="paddedcellright"> {
+														expr "Output Bytes";
+													}
+													<td colspan="16" id="paddedcell"> {
+														expr (./ipv6-transit-statistics/output-bytes);
+													}
+												}
+												<tr> {
+													<td colspan="4" id="paddedcellright"> {
+														expr "Input Packets";
+													}
+													<td colspan="16" id="paddedcell"> {
+														expr (./ipv6-transit-statistics/input-packets);
+													}
+												}
+												<tr> {
+													<td colspan="4" id="paddedcellright"> {
+														expr "Output Packets";
+													}
+													<td colspan="16" id="paddedcell"> {
+														expr (./ipv6-transit-statistics/output-packets);
+													}
+												}
+											}
+										}
+										/* Local Statistics */
+										if ( name() == "local-traffic-statistics" ) {
+											<tr> {
+												<td colspan="20" id="tableheaderleft"> {
+													expr "Local statistics:";
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Input Bytes";
+												}
+												<td colspan="16" id="paddedcell"> {
+													expr (./input-bytes);
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Output Bytes";
+												}
+												<td colspan="16" id="paddedcell"> {
+													expr (./output-bytes);
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Input Packets";
+												}
+												<td colspan="16" id="paddedcell"> {
+													expr (./input-packets);
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Output Packets";
+												}
+												<td colspan="16" id="paddedcell"> {
+													expr (./output-packets);
+												}
+											}
+										}
+										/* Transit Statistics */
+										if ( name() == "transit-traffic-statistics" ) {
+											<tr> {
+												<td colspan="20" id="tableheaderleft"> {
+													expr "Transit statistics:";
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Input Bytes";
+												}
+												<td colspan="4" id="paddedcell"> {
+													expr (./input-bytes);
+												}
+												<td colspan="12" id="paddedcell"> {
+													expr (./input-bps) _ " bps";
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Output Bytes";
+												}
+												<td colspan="4" id="paddedcell"> {
+													expr (./output-bytes);
+												}
+												<td colspan="12" id="paddedcell"> {
+													expr (./output-bps) _ " bps";
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Input Packets";
+												}
+												<td colspan="4" id="paddedcell"> {
+													expr (./input-packets);
+												}
+												<td colspan="12" id="paddedcell"> {
+													expr (./input-pps) _ " pps";
+												}
+											}
+											<tr> {
+												<td colspan="4" id="paddedcellright"> {
+													expr "Output Packets";
+												}
+												<td colspan="4" id="paddedcell"> {
+													expr (./output-packets);
+												}
+												<td colspan="12" id="paddedcell"> {
+													expr (./output-pps) _ " pps";
+												}
+											}
+											/* IPv6 transit statistics*/
+											if (./ipv6-transit-statistics) {
+												<tr> {
+													<td colspan="20" id="tableheaderleft"> {
+														expr "IPv6 transit statistics:";
+													}
+												}
+												<tr> {
+													<td colspan="4" id="paddedcellright"> {
+														expr "Input Bytes";
+													}
+													<td colspan="16" id="paddedcell"> {
+														expr (./ipv6-transit-statistics/input-bytes);
+													}
+												}
+												<tr> {
+													<td colspan="4" id="paddedcellright"> {
+														expr "Output Bytes";
+													}
+													<td colspan="16" id="paddedcell"> {
+														expr (./ipv6-transit-statistics/output-bytes);
+													}
+												}
+												<tr> {
+													<td colspan="4" id="paddedcellright"> {
+														expr "Input Packets";
+													}
+													<td colspan="16" id="paddedcell"> {
+														expr (./ipv6-transit-statistics/input-packets);
+													}
+												}
+												<tr> {
+													<td colspan="4" id="paddedcellright"> {
+														expr "Output Packets";
+													}
+													<td colspan="16" id="paddedcell"> {
+														expr (./ipv6-transit-statistics/output-packets);
+													}
+												}
+											}
+										}
+										if ( name() == "lag-traffic-statistics" ) {
+											<tr> {
+												<td colspan="4" id="tableheaderleft"> {
+													expr "Statistics";
+												}
+												<td colspan="4" id="tableheaderright"> {
+													expr "Packets";
+												}
+												<td colspan="4" id="tableheaderright"> {
+													expr "pps";
+												}
+												<td colspan="4" id="tableheaderright"> {
+													expr "Bytes";
+												}
+												<td colspan="4" id="tableheaderright"> {
+													expr "bps";
+												}
+											}
+											/* lag-bundle */
+											if ( $results/logical-interface/lag-traffic-statistics/lag-bundle ) {
+												<tr> {
+													<td colspan="20" id="celltitle"> {
+														expr "Bundle";
+													}
+												}
+												<tr> {
+													<td colspan="4" id="right"> {
+														expr "Input";
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-bundle/input-packets);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-bundle/input-pps);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-bundle/input-bytes);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-bundle/input-bps);
+													}
+												}
+												<tr> {
+													<td colspan="4" id="right"> {
+														expr "Output";
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-bundle/output-packets);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-bundle/output-pps);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-bundle/output-bytes);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-bundle/output-bps);
+													}
+												}
+											}
+											/* lag-link */
+											if ( $results/logical-interface/lag-traffic-statistics/lag-link ) {
+												<tr> {
+													<td colspan="20" id="celltitle"> {
+														expr "Link";
+													}
+												}
+												<tr> {
+													<td colspan="20"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-link/name);
+														if ( $results/logical-interface/lag-traffic-statistics/lag-link/down ) {
+															expr " <-- down";
+														}
+													}
+												}
+												<tr> {
+													<td colspan="4" id="right"> {
+														expr "Input";
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-link/input-packets);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-link/input-pps);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-link/input-bytes);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-link/input-bps);
+													}
+												}
+												<tr> {
+													<td colspan="4" id="right"> {
+														expr "Output";
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-link/output-packets);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-link/output-pps);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-link/output-bytes);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-link/output-bps);
+													}
+												}
+											}
+											/* lag-marker */
+											if ( $results/logical-interface/lag-traffic-statistics/lag-marker ) {
+												<tr> {
+													<td colspan="4" id="tableheaderleft"> {
+														expr "Marker Statistics";
+													}
+													<td colspan="4" id="tableheaderright"> {
+														expr "Marker Rx";
+													}
+													<td colspan="4" id="tableheaderright"> {
+														expr "Resp Tx";
+													}
+													<td colspan="4" id="tableheaderright"> {
+														expr "Unknown Rx";
+													}
+													<td colspan="4" id="tableheaderright"> {
+														expr "Illegal Rx";
+													}
+												}
+												<tr> {
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-marker/name);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-marker/marker-rx-packets);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-marker/marker-response-tx-packets);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-marker/unknown-rx-packets);
+													}
+													<td colspan="4" id="right"> {
+														expr ($results/logical-interface/lag-traffic-statistics/lag-marker/illegal-rx-packets);
+													}
+												}
+											}
+										}
+										/* filter information */
+										if ( name() == "filter-information" ) {
+											/* Code for filters goes here. */
+										}
+										/* address family */
+										if ( name() == "address-family" ) {
+											if ( ./address-family-name && not(./pppoe-underlying-information) ) {
+												<tr> {
+													<td colspan="20"> {
+														expr "Protocol " _ (./address-family-name) _ ", ";
+														if (./ae-bundle-name) {
+															expr "AE bundle: " _ (./ae-bundle-name) _", ";
+														}
+														if (./mtu) {
+															expr "MTU: " _ (./mtu) _ ", ";
+														}
+														if (./generation) {
+															expr "Generation: " _ (./generation) _ ", ";
+														}
+														if (./route-table) {
+															expr "Route table: " _ (./route-table);
+														}
+													}
+												}
+											}
+											else if ( ./address-family-name && ./pppoe-underlying-information ) {
+												<tr> {
+													<td colspan="20"> {
+														expr "Protocol " _ (./address-family-name);
+													}
+												}
+												<tr> {
+													<td> {
+													}
+													<td colspan="19"> {
+														expr "Dynamic Profile: " _ (./pppoe-underlying-information/pppoe-underlying-interface/dynamic-profile) _ ",";
+													}
+												}
+												<tr> {
+													<td> {
+													}
+													<td colspan="19"> {
+														expr "Service Name Table: " _ (./pppoe-underlying-information/pppoe-underlying-interface/service-name-table) _ ",";
+													}
+												}
+												<tr> {
+													<td> {
+													}
+													<td colspan="19"> {
+														expr "Max Sessions: " _ (./pppoe-underlying-information/pppoe-underlying-interface/max-sessions) _ ", ";
+														expr "Max Sessions VSA Ignore: " _ (./pppoe-underlying-information/pppoe-underlying-interface/max-sessions-vsa-ignore) _ ",";
+													}
+												}
+												<tr> {
+													<td> {
+													}
+													<td colspan="19"> {
+														expr "Duplicate Protection: " _ (./pppoe-underlying-information/pppoe-underlying-interface/duplicate-protection) _ ", ";
+														expr "Short Cycle Protection: " _ (./pppoe-underlying-information/pppoe-underlying-interface/short-cycle-protection) _ ",";
+													}
+												}
+												<tr> {
+													<td> {
+													}
+													<td colspan="19"> {
+														expr "AC Name: " _ (./pppoe-underlying-information/pppoe-underlying-interface/ac-name);
+													}
+												}
+												<tr> {
+													<td colspan="20"> {
+														if (./mtu) {
+															expr "MTU: " _ (./mtu) _ ", ";
+														}
+														if (./generation) {
+															expr "Generation: " _ (./generation) _ ", ";
+														}
+														if (./route-table) {
+															expr "Route table: " _ (./route-table);
+														}
+													}
+												}
+											}
+											if ( ./address-family-flags ) {
+												<tr> {
+													<td> {
+													}
+													<td colspan="19"> {
+														expr "Flags: ";
+														for-each (./address-family-flags/*) {
+															if ( name() != "internal-flags" ) {
+																var $myflag = substring-after( name() , "-" );
+																expr jcs:printf( "%jcs" , $myflag ) _ " ";
+															}
+															/* Watch for internal flags */
+															else if ( name() == "internal-flags" ) {
+																expr "Internal: " _ (.) _ " ";
+															}
+														}
+													}
+												}
+											}
+											if ( ./route-rpf-statistics ) {
+												<tr> {
+													<td> {
+													}
+													<td colspan="19"> {
+														expr "RPF Failures: ";
+														expr "Packets: " _ (./route-rpf-statistics/route-rpf-packets) _ ", ";
+														expr "Bytes: " _ (./route-rpf-statistics/route-rpf-bytes);
+													}
+												}
+											}
+											if ( ./address-family-unnumbered ) {
+												<tr> {
+													<td> {
+													}
+													<td colspan="19"> {
+														expr "Donor interface: " _ (./address-family-unnumbered/unnumbered-family-donor-interface-name) _ " ";
+														expr "(Index " _ (./address-family-unnumbered/unnumbered-family-donor-interface-index) _")";
+													}
+												}
+											}
+											if ( ./filter-information/filter-input ) {
+												<tr> {
+													<td> {
+													}
+													<td colspan="19"> {
+														expr "Input Filters: " _ (./filter-information/filter-input);
+													}
+												}
+											}
+											if ( ./policer-information/policer-input ) {
+												<tr> {
+													<td> {
+													}
+													<td colspan="19"> {
+														expr "Policer: " ;
+														if (./policer-information/policer-input) {
+															expr "Input: " _ (./policer-information/policer-input);
+														}
+													}
+												}
+											}
+											if ( ./interface-address ) {
+												for-each (./interface-address) {
+													<tr> {
+														<td> {
+														}
+														<td colspan="19"> {
+															expr " Addresses, " ;
+															if (./ifa-flags) {
+																expr "Flags: " ;
+																for-each (./ifa-flags/*) {
+																	if ( name() != "internal-flags" ) {
+																		var $myflag = substring-after( name() , "-" );
+																		var $newflag = str:replace( $myflag , "current" , "Is" );
+																		expr jcs:printf( "%jcs" , $newflag ) _ " ";
+																	}
+																	/* Watch for internal flags */
+																	else if ( name() == "internal-flags" ) {
+																		expr "Internal: " _ (.) _ " ";
+																	}
+																}
+															}
+														}
+													}
+													<tr> {
+														<td colspan="2"> {
+														}
+														<td colspan="18"> {
+															if (./ifa-destination) {
+																expr " Destination: " _ (./ifa-destination) _ ", ";
+															}
+															if (./ifa-local) {
+																expr " Local: " _ (./ifa-local) _ ", ";
+															}
+															if (./ifa-broadcast) {
+																expr " Broadcast: " _ (./ifa-broadcast) _ ", ";
+															}
+															if (./generation) {
+																expr " Generation: " _ (./generation);
+															}
+														}
+													}
+												}
+											}
+										}
+										/* Debug code to parse all data can be placed here. */
+									} /* End of for-each descendent::* */
+								}
+			        	<p>;
+			        }
+						}
+					}
+				}  /* End of Body */
+			}
+		}
+		expr jcs:syslog("daemon.info", "SCRIPT_ACTION_LIF_STATUS: Script action taken to show status of the logical interface.");
+	}
+}
+
+template rpc_failure($rpc, $message = "Following errors occurred while trying to gather data: ") {
+  expr jcs:syslog("daemon.error", $message);
+  for-each ($rpc//xnm:error) {
+    expr jcs:syslog("daemon.error", message);
+  }
+}
+

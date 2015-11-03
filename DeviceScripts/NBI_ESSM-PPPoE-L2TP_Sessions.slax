@@ -1,0 +1,189 @@
+/*
+ * Filename      : NBI_ESSM-PPPoE-L2TP_Sessions.slax
+ * Author        : Andrew Sharp asharp@juniper.net
+ * Build         : CVS_BUILD
+ * Platform      : Junos Space
+ * Release       : 14.1+
+ * SVN INFO      :
+ *
+ * $Revision$
+ * $Date$
+ * $Author$
+ *
+ * Description   : NBI script to be used to show the number of ESSM, PPPoE and L2TP sessions
+ * on the chassis, and per ge-/xe- port.
+ *
+ *
+ */
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns func extension = "http://exslt.org/functions";
+ns set = "http://exslt.org/sets";
+
+import "../import/junos.xsl";
+
+/* Junos Space specific context, name and description */
+/* @CONTEXT = "/device[name='NBI only']" */
+/* @NAME = "NBI ESSM PPPoE L2TP Sessions" */
+/* @DESCRIPTION = "NBI ESSM PPPoE LT2P Sessions" */
+/* @ISLOCAL = "true" */
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "The context associated with this script.";
+	}
+}
+
+param $CONTEXT;
+
+/* open connection */
+var $conn = jcs:open();
+
+/* Globals */
+mvar $sumPPPoE = 0;
+mvar $sumL2TP = 0;
+
+match / {
+	<op-script-results> {
+		/* get all interfaces */
+		var $get-interface-information = <get-interface-information> {
+			<terse>;
+		}
+		var $interface-information = jcs:execute( $conn, $get-interface-information );
+		if ($interface-information/..//xnm:error) {
+			call rpc_failure($rpc = $interface-information/.., $message = "Error collecting interface information.");
+		}
+
+		/* create a list of physical interfaces associated with pppoe and l2tp */
+		var $list-of-interfaces := {
+			<interfaces> {
+				for-each( $interface-information//physical-interface ) {
+					if ( starts-with(name, "ge") || starts-with( name, "xe" ) ) {
+						var $get-subscribers-int = <get-subscribers> {
+							<physical-interface> name;
+							<client-type> "pppoe";
+							<detail>;
+						}
+						var $subscriber-information-int = jcs:execute( $conn, $get-subscribers-int );
+						/* count numer of sessions and l2tp */
+						var $sumIntPPPoE = count( $subscriber-information-int/subscriber[ access-type == "PPPoE" ] );
+						var $sumIntL2TP = count( $subscriber-information-int/subscriber[ contains( State, "Tunneled" ) ] );
+						if ( $sumIntPPPoE > 0 ) {
+							<interface> name;
+							/* save totals for pppoe and l2tp into global variables */
+							set $sumPPPoE = $sumPPPoE + $sumIntPPPoE;
+							set $sumL2TP = $sumL2TP + $sumIntL2TP;
+						}
+					}
+				}
+			}
+		}
+
+		/* collect essm data via rpc */
+		var $rpc-interface = <get-subscribers> {
+			<interface> "ge-*";
+			<client-type> "essm";
+			<detail>;
+		}
+		var $rpc-interface-xe = <get-subscribers> {
+			<interface> "xe-*";
+			<client-type> "essm";
+			<detail>;
+		}
+		var $result-interface = jcs:execute( $conn , $rpc-interface );
+		var $result-interface-xe = jcs:execute( $conn , $rpc-interface-xe );
+
+		if ($result-interface/..//xnm:error) {
+			call rpc_failure($rpc = $result-interface/.., $message = "Error collecting ge- subscriber data.");
+
+		}
+		if ($result-interface-xe/..//xnm:error) {
+			call rpc_failure($rpc = $result-interface-xe/.., $message = "Error collecting xe- subscriber data.");
+		}
+
+		/* identify all active essm logical interfaces - union of ge- and xe- */
+		var $data = $result-interface[//state="Active"]/subscriber/interface | $result-interface-xe[//state="Active"]/subscriber/interface;
+
+		/* create nodeset that contains only the essm physical interfaces - includes duplicates */
+		var $phy-int := {
+			<interfaces> {
+				for-each ( $data ) {
+					<interface> substring-before( . , ".");
+				}
+			}
+		}
+
+		/* create a union of essm and pppoe interfaces */
+		var $all-interfaces = $phy-int | $list-of-interfaces;
+
+		/* a list of just physical interfaces that have PPPoE, L2TP or ESSM - no duplicates */
+		var $unique-int = set:distinct($all-interfaces/interfaces/interface);
+
+		<sessions> {
+			/* by device */
+			<chassis> {
+				<essm> {
+					/* count all active entries across all ge- and xe- interfaces for total */
+					expr count($result-interface/subscriber[state="Active" and starts-with(interface,"ge-")]) + count($result-interface-xe/subscriber[state="Active" and starts-with(interface,"xe-")]);
+				}
+				<pppoe> {
+					expr ($sumPPPoE - $sumL2TP);
+				}
+				<l2tp> {
+					expr ($sumL2TP);
+				}
+			}
+			<interfaces> {
+				/* display each unique physical interface name - and count the sessions */
+				for-each ($unique-int) {
+					<xsl:sort>;
+					<interface> {
+						<name> {
+							expr .;
+						}
+						var $name = .;
+						<essm> {
+							/* count all sessions associated with a physical interface - which includes all the logical units */
+							expr count($result-interface/subscriber[state="Active" and starts-with(interface, $name _ "." )]);
+						}
+						var $ppp-int = <get-subscribers> {
+							<physical-interface> $name;
+							<client-type> "pppoe";
+							<detail>;
+						}
+						var $cell-data1-res = jcs:execute( $conn, $ppp-int ); 
+						var $cell-data1 = count( $cell-data1-res/subscriber[ access-type == "PPPoE" ] );
+						var $cell-data2 = count( $cell-data1-res/subscriber[ contains( State, "Tunneled" ) ] );
+						<pppoe> {
+							expr $cell-data1 - $cell-data2;
+						}
+						<l2tp> {
+							expr $cell-data2;
+						}
+					}
+				}
+			}
+		}
+		/* close connection */
+		expr jcs:close( $conn );
+		expr jcs:syslog("daemon.info", "SCRIPT_NBI_ESSM_PPPOE_L2TP_SESSIONS_INFO: Script action taken to fetch ESSM PPPOE L2TP Sessioninformation.");
+	}
+}
+
+template rpc_failure($rpc, $message = "Following errors occurred while trying to gather data: ") {
+	<errors> {
+		expr $message;
+	}
+	expr jcs:syslog("daemon.error", $message);
+	for-each ($rpc//xnm:error) {
+		expr jcs:syslog("daemon.error", message);
+		<error> {
+			expr message;
+		}
+	}
+}

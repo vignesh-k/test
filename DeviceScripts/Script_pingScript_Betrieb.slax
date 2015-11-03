@@ -1,0 +1,181 @@
+/* 
+	Script to simulate the "ping" CLI command.
+*/
+
+/*
+	Author: bcersows
+	Version: 1.02
+	Date: 30.04.2014
+	Last Modified By: bcersows
+	###Script_pingScript_Betrieb.slax;v1.02;2014.04.30
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns curl extension = "http://xml.libslax.org/curl";
+ns date = "http://exslt.org/dates-and-times";
+ns str = "http://exslt.org/strings";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "Looking Glass Ping" */
+/* @DESCRIPTION = "Pings. Source can be specified." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'amount','defaultvalue':'3'},{'name':'host','defaultvalue':'10.201.100.100'},{'name':'source','defaultvalue':''},{'name':'mode','selectionvalues':',inet,inet6'},{'name':'routingInstance','parameterscope':'devicespecific','selectionvaluesxpath':'fn:insert-before(/device/configuration/routing-instances/instance/name/text(), 0, "None Specified")'}]" */
+/* @PASSDEVICECREDENTIALS = "true" */
+
+mvar $counter = 0;
+mvar $output = "";
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf. Kann mehrere Devices enthalten.";
+	}
+	<argument> {
+		<name> "amount";
+		<description> "Amount of pings.";
+	}
+	<argument> {
+		<name> "host";
+		<description> "Ping target.";
+	}
+	<argument> {
+		<name> "mode";
+		<description> "Mode to force. [ ,inet,inet6]";
+	}
+	<argument> {
+		<name> "source";
+		<description> "Source address. Optional.";
+	}
+	<argument> {
+		<name> "routingInstance";
+		<description> "The Routing Instance to ping from. Configured RIs are in the list. Optional.";
+	}
+}
+param $CONTEXT;
+param $amount;
+param $source;
+param $host;
+param $routingInstance;
+param $mode;
+
+match / {
+	<op-script-results> {
+		<output> {
+			/*expr "Context: " _ $CONTEXT _ " \nCredentials: " _ $credentials _ "\n";*/
+			
+			mvar $count = 1;    /*count of devices    */
+			mvar $hostname;       /* credentials of user@ip           */
+			mvar $splitHostname;  /* array of user and ip credentials */
+			mvar $ip;             /* credentials ip address           */
+			mvar $user;           /* credentials username             */
+			mvar $password;       /* credentials password             */
+			
+			/* Split interfaces and Credentials */
+			var $devices = jcs:split("\\|", $CONTEXT);
+			var $splitCredentials = str:split( $credentials , "\\;" );
+					
+			
+		
+			/* Loop through every device */
+			for-each ( $devices ) {
+				var $myDevice = jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", (.) )[2];
+				uexpr $count _ " " _ . _ " -> " _ $myDevice _ ":"; expr "\n";
+				
+				/* Using the count of unique devices found, the correct connection */
+				/* parameters to be used can be derived from $splitCredentials     */
+				var $splitCredential = str:split( $splitCredentials[$count] , "\\:" );
+				set $count = $count + 1;
+				
+				set $hostname = $splitCredential[1];
+				set $password = $splitCredential[2];
+				set $splitHostname = str:split( $hostname[1] , "\@");
+				set $user = $splitHostname[1];
+				set $ip = $splitHostname[2];
+				
+				var $connection = jcs:open( $ip , $user , $password );
+
+				if ($connection/..//xnm:error) {
+					call rpc_failure($rpc = $connection/.., $message = "Error connecting on mgd on this RE");
+					<xsl:message terminate="yes"> ;
+				}
+				
+				var $myRI = substring-before( substring-after( $routingInstance, $myDevice _ "\":\"" ), "\"" );
+				var  $get-rpc = <ping> {
+					<count>$amount;
+					<rapid>;
+					if ( $source ) {
+					<source>$source;
+					}
+					if ( $mode == "inet" ) {
+					<inet>;
+					} else if ( $mode == "inet6" ) {
+					<inet6>;
+					}
+					if ( $myRI != "None Specified" ) {
+					<routing-instance> $myRI;
+					}
+					<host>$host;
+				}
+			
+				var $results = jcs:execute($connection , $get-rpc);
+				
+				if ($results/..//xnm:error) {
+					call rpc_failure($rpc = $results/.., $message = "Error executing command show configuration interfaces");
+					<xsl:message terminate="yes"> ;
+				}
+				var $close-results = jcs:close ( $connection );
+				if ($close-results/..//xnm:error) {
+					call rpc_failure($rpc = $close-results/.., $message = "Error closing connection.");
+					<xsl:message terminate="yes"> ;
+				}
+				
+				expr ""; expr "\n";
+				expr "Amount: " _ $amount _ "."; expr "\n";
+				expr "Host: " _ $results/target-host _ "."; expr "\n";
+				if ( $results/source ) {
+					expr "Source: " _ $results/source _ "."; expr "\n";
+				}
+				expr ""; expr "\n";
+				expr "Packet size: " _ $results/packet-size _ "."; expr "\n";
+				
+				expr "__________________________________"; expr "\n";
+				expr "Sent: " _ $results/probe-results-summary/probes-sent _ "."; expr "\n";
+				expr "Received: " _ $results/probe-results-summary/responses-received _ "."; expr "\n";
+				expr "Lost: " _ $results/probe-results-summary/packet-loss _ "%."; expr "\n";
+				expr "In %: " _ (100 - $results/probe-results-summary/packet-loss) _ "."; expr "\n";
+				if ( $results/probe-results-summary/rtt-minimum ) {
+					expr "RTT Min/Max/Avg/Stddev: " _ $results/probe-results-summary/rtt-minimum _ "/" _ $results/probe-results-summary/rtt-maximum _ "/" _ $results/probe-results-summary/rtt-average _ "/" _ $results/probe-results-summary/rtt-stddev _ "."; expr "\n";
+				}
+				
+				expr "Result: ";
+				if ( $results/ping-failure ) {
+					expr $results/ping-failure;
+				}
+				if ( $results/ping-success ) {
+					/*expr $results/ping-success;*//* Is empty */
+					expr "Success"; 
+				}
+				expr "."; expr "\n";
+				expr "------------------------------------------------------\n";
+			}
+		}
+	}
+}
+
+template rpc_failure($rpc, $message = "Following errors occurred while trying to gather data: ") {
+	expr jcs:syslog("daemon.error", $message);
+	expr $message _ "\n";
+	for-each ($rpc//xnm:error) {
+		expr jcs:syslog("daemon.error", .);
+		expr . _ "\n";
+	}
+}

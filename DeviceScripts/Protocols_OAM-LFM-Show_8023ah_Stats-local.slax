@@ -1,0 +1,870 @@
+/*
+ * Filename      : Protocols_OAM-LFM-Show_802.3ah_Stats-local.slax
+ * Author        : Andrew Sharp asharp@juniper.net
+ * Platform      : Junos Space
+ * Release       : 13.1P2
+ * Version       : 1.0
+ * SVN INFO      :
+ *
+ * $Rev: 36133 $
+ * $Date: 2014-04-24 14:14:09 +0100 (Thu, 24 Apr 2014) $
+ * $Author: asharp $
+ * 
+ * Description   : Display 802.3ah statistics
+ *
+ */
+
+version 1.1;
+
+/* Namespace declarations */
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns exsl extension = "http://exslt.org/common";
+ns jspace = "http://jspace-utils/asharp@juniper.net";
+ns str = "http://exslt.org/strings";
+
+/* Imports */
+import "../import/junos.xsl";
+import "lc-jspace-lib.slax";
+
+/* Junos Space specific context, name and description */
+/* @CONTEXT = "/device/interface-information/physical-interface" */
+/* @NAME = "802.3ah Readout" */
+/* @DESCRIPTION = "Display 802.3ah statistics." */
+/* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
+/* @ISLOCAL = "true" */
+/* @PASSDEVICECREDENTIALS = "true" */
+
+/* Global variables */
+var $scriptname = "Protocols_OAM-LFM-Show_802.3ah_Stats-local.slax";
+var $results;
+var $interfaces;
+var $oam-results;
+var $ae-results;
+mvar $host-change = "1";
+mvar $host-compare;
+mvar $hostname;
+var $info;
+var $splitCredentials;
+var $splitCredential;
+mvar $password;
+mvar $user;
+mvar $ip;
+mvar $count = "0";
+mvar $splitHostname;
+var $devicename;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "The context associated with this script.";
+	}
+}
+param $CONTEXT;
+
+match / {
+	<op-script-results> {
+		var $interfaces = jcs:split("\\|", $CONTEXT);
+		var $splitCredentials = str:split($credentials , "\\;");
+		<output> {
+	    <HTML> {
+				<HEAD> {
+		    	<title> "802.3ah Information:";
+		    	copy-of jspace:html-style("9");
+				}
+				<BODY> {
+		    	/* Loop through each physical interface */
+		    	for-each ($interfaces) {
+		    		var $interface-regex = jcs:regex( "/device(\\[.*\\])/interface-information/physical-interface(\\[.*\\])", (.) );
+						var $devicename = str:replace(str:replace($interface-regex[2],"[name=\"",""),"\"]","");
+						var $physintname = str:replace(str:replace(str:replace($interface-regex[3],"[name=",""),"]",""),"\"","");
+						
+						/* First time pass save initial devicename into $host-compare */
+						if ($count = "0") {
+							set $host-compare = $devicename;
+							set $count = $count + 1;
+						}
+
+						/* Lookup first host credentials */
+						if ( $host-compare = $devicename ) {
+							var $splitCredential = str:split( $splitCredentials[$count] , "\\:" );
+							set $hostname = $splitCredential[1];
+							set $password = $splitCredential[2];
+							set $splitHostname = str:split( $hostname[1] , "\@");
+							set $user = $splitHostname[1];
+							set $ip = $splitHostname[2];
+						}
+						else if ( $host-compare != $devicename) {
+							/* a different device has been found */
+							/* increase the counter*/
+							set $count = $count + 1;
+							/* update the host-comparison to check once more */
+							set $host-compare = $devicename;
+							/* Use a different set of credentials based on the device count */
+							var $splitCredential = str:split( $splitCredentials[$count] , "\\:" );
+							set $hostname = $splitCredential[1];
+							set $password = $splitCredential[2];
+							set $splitHostname = str:split( $hostname[1] , "\@");
+							set $user = $splitHostname[1];
+							set $ip = $splitHostname[2];
+						}
+
+		        call get-stats ( $port = (.) , $ip = $ip , $user = $user , $password = $password );
+		        /* ae ?*/
+		        if ( starts-with( (str:replace(str:replace(str:replace(jcs:regex( "/device(\\[.*\\])/interface-information/physical-interface(\\[.*\\])", (.) )[3],"[name=",""),"]",""),"\"","")) , "ae" ) ) {
+							call ae-membership( $ae = (.) , $ip = $ip , $user = $user , $password = $password , $devicename = $devicename );
+		        }
+					}
+				}
+	    }
+		}
+	}
+}
+
+template ae-membership ( $ae , $ip , $user , $password , $devicename ) {
+	<p> {
+		/* 
+			search configuration for:
+			interface {
+				gigether-options {
+					802.3ad $ae;
+				}
+			}
+		*/
+		var $config = {
+			<get-configuration database="committed"> {
+				<configuration> {
+					<interfaces>;
+				}
+			}
+		}
+		var $connection = jcs:open( $ip , $user , $password );
+		var $config-results = jcs:execute($connection , $config);
+		var $close-results = jcs:close ( $connection );
+		for-each ( $config-results/interfaces/interface/gigether-options/ieee-802.3ad[bundle=str:replace(str:replace(str:replace(jcs:regex( "/device(\\[.*\\])/interface-information/physical-interface(\\[.*\\])", $ae )[3],"[name=",""),"]",""),"\"","")]) {
+			call get-member-stats ( $port = (../../name) , $ip = $ip , $user = $user , $password = $password, $devicename = $devicename );
+		}
+	}
+}
+
+template get-stats ( $port , $ip , $user , $password) {
+	var $interface-regex = jcs:regex( "/device(\\[.*\\])/interface-information/physical-interface(\\[.*\\])", $port );
+	var $devicename = str:replace(str:replace($interface-regex[2],"[name=\"",""),"\"]","");
+	var $physintname = str:replace(str:replace(str:replace($interface-regex[3],"[name=",""),"]",""),"\"","");
+	/* Get 802.3ah information */
+	var  $get-lfmd-information-rpc = <get-lfmd-information> {
+		<detail>;
+		<interface-name> $physintname;
+	}
+	var $connection = jcs:open( $ip , $user , $password );
+	var $results = jcs:execute($connection , $get-lfmd-information-rpc);
+	var $close-results = jcs:close ( $connection );
+
+	<p>;
+	if ( not( $results/lfmd-interface-information ) ) {
+		<p style="font-weight:bolder"> {
+			expr "OAM Ethernet Link-Fault-Management is not enabled on " _ $devicename _ ": interface \"" _ $physintname _ "\".";
+		}
+	}
+	for-each ( $results/lfmd-interface-information ) {
+		if (not(lfmd-status = "Down")) {
+			<table border="1"> {
+				<tr> {
+		    	<td colspan="4" id="tableheader"> {
+		    		expr "Interface: " _ $devicename _ ": " _ (lfmd-interface-name);
+					}
+				}
+				<tr> {
+		    	<td colspan="4"> {
+		    		expr "Status: " _ (lfmd-status) _ ", ";
+						expr "Discovery state: " _ (lfmd-discovery-state);
+					}
+				}
+				<tr> {
+		    	<td colspan="4"> {
+		    		expr "Peer address: " _ (lfmd-peer-address);
+					}
+				}
+				<tr> {
+		    	<td colspan="4"> {
+						expr "Flags:";
+						if ( lfmd-discovery-flags ) {
+							for-each ( lfmd-discovery-flags/* ) {
+			        	if ( name() != "lfmd-pdu-flags" ) {
+			        		var $myflag = substring-after( name(.) , "lfmd-flag-" );
+									expr jcs:printf( "%jcs" , $myflag ) _ ", ";
+								}
+								else if ( name() = "lfmd-pdu-flags" ) {
+									expr (.) _ ",";
+								}
+							}
+		        }
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+						expr "OAM receive statistics:";
+					}
+				}
+				<tr> {
+		    	<td> {
+						expr "Information: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-information-pdus-received);
+					}
+					<td> {
+						expr "Event: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-event-pdus-received);
+					}
+					<td> {
+						expr "Variable request: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-variable-request-pdus-received);
+					}
+					<td> {
+		        expr "Variable response: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-variable-response-pdus-received);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+						expr " Loopback control: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-loopback-control-pdus-received);
+					}
+					<td colspan="2"> {
+						expr "Organization specific: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-organization-pdus-received);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+						expr "OAM flags receive statistics:";
+					}
+				}
+				<tr> {
+		    	<td> {
+						expr "Critical event: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-critical-event-received);
+					}
+					<td> {
+						expr "Dying gasp: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-dying-gasp-received);
+					}
+					<td colspan="2"> {
+						expr "Link fault: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-link-fault-received);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+						expr "OAM transmit statistics:";
+					}
+				}
+				<tr> {
+		    	<td> {
+						expr "Information: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-information-pdus-transmitted);
+					}
+					<td> {
+						expr "Event: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-event-pdus-transmitted);
+					}
+					<td> {
+						expr "Variable request: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-variable-request-pdus-transmitted);
+					}
+					<td> {
+		        expr "Variable response: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-variable-response-pdus-transmitted);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Loopback control: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-loopback-control-pdus-transmitted);
+					}
+					<td colspan="2"> {
+						expr "Organization specific: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-organization-pdus-transmitted);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM received symbol error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-symbol-error/lfmd-event-received-symbol-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-symbol-error/lfmd-event-received-symbol-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-symbol-error/lfmd-event-received-symbol-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-symbol-error/lfmd-event-received-symbol-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-symbol-error/lfmd-event-received-symbol-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM received frame error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-error/lfmd-event-received-frame-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-error/lfmd-event-received-frame-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-error/lfmd-event-received-frame-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-error/lfmd-event-received-frame-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-error/lfmd-event-received-frame-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM received frame period error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-period-error/lfmd-event-received-frame-period-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-period-error/lfmd-event-received-frame-period-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-period-error/lfmd-event-received-frame-period-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-period-error/lfmd-event-received-frame-period-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-period-error/lfmd-event-received-frame-period-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM received frame seconds error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-seconds-error/lfmd-event-received-frame-seconds-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-seconds-error/lfmd-event-received-frame-seconds-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-seconds-error/lfmd-event-received-frame-seconds-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-seconds-error/lfmd-event-received-frame-seconds-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-seconds-error/lfmd-event-received-frame-seconds-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM transmitted symbol error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-symbol-error/lfmd-event-transmitted-symbol-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-symbol-error/lfmd-event-transmitted-symbol-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-symbol-error/lfmd-event-transmitted-symbol-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-symbol-error/lfmd-event-transmitted-symbol-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-symbol-error/lfmd-event-transmitted-symbol-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM current symbol error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-symbol-error/lfmd-event-symbol-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-symbol-error/lfmd-event-symbol-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-symbol-error/lfmd-event-symbol-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-symbol-error/lfmd-event-symbol-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-symbol-error/lfmd-event-symbol-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM transmitted frame error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-frame-error/lfmd-event-transmitted-frame-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-frame-error/lfmd-event-transmitted-frame-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-frame-error/lfmd-event-transmitted-frame-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-frame-error/lfmd-event-transmitted-frame-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-frame-error/lfmd-event-transmitted-frame-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM current frame error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-frame-error/lfmd-event-frame-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-frame-error/lfmd-event-frame-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-frame-error/lfmd-event-frame-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-frame-error/lfmd-event-frame-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-frame-error/lfmd-event-frame-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "Remote entity information:";
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Remote MUX action: " _ (lfmd-peer-mux-action);
+					}
+					<td colspan="2"> {
+		        expr "Remote parser action: " _ (lfmd-peer-parser-action);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Discovery mode: " _ (lfmd-peer-config-mode);
+					}
+					<td colspan="2"> {
+		        expr "Unidirectional mode: " _ (lfmd-peer-config-unidirectional);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Remote loopback mode: " _ (lfmd-peer-config-loopback);
+					}
+					<td colspan="2"> {
+		        expr "Link events: " _ (lfmd-peer-config-link-events);
+					}
+				}
+				<tr> {
+		    	<td colspan="4"> {
+		        expr "Variable requests: " _ (lfmd-peer-config-variable-request);
+					}
+				}
+	    }
+		}
+		else {
+			<p style="font-weight:bolder"> {
+				expr "OAM Ethernet Link-Fault-Management reports " _ $devicename _ ": interface \"" _ (lfmd-interface-name) _ "\" as Down.";
+			}
+		}
+	}
+}
+
+template get-member-stats ( $port , $ip , $user , $password , $devicename ) {
+	var $physintname = $port;
+	/* Get 802.3ah information */
+	var  $get-lfmd-information-rpc = <get-lfmd-information> {
+		<detail>;
+		<interface-name> $physintname;
+	}
+	var $connection = jcs:open( $ip , $user , $password );
+	var $results = jcs:execute($connection , $get-lfmd-information-rpc);
+	var $close-results = jcs:close ( $connection );
+
+	<p>;
+	if ( not( $results/lfmd-interface-information ) ) {
+		<p style="font-weight:bolder"> {
+			expr "OAM Ethernet Link-Fault-Management is not enabled on " _ $devicename _ ": interface \"" _ $physintname _ "\".";
+		}
+	}
+	for-each ( $results/lfmd-interface-information ) {
+		if (not(lfmd-status = "Down")) {
+			<table border="1"> {
+				<tr> {
+					<td colspan="4" id="tableheader"> {
+		        expr "Interface: " _ $devicename _ ": " _ (lfmd-interface-name);
+					}
+				}
+				<tr> {
+		    	<td colspan="4"> {
+						expr "Status: " _ (lfmd-status) _ ", ";
+		        expr "Discovery state: " _ (lfmd-discovery-state);
+					}
+				}
+				<tr> {
+		    	<td colspan="4"> {
+		    		expr "Peer address: " _ (lfmd-peer-address);
+					}
+				}
+				<tr> {
+		    	<td colspan="4"> {
+						expr "Flags:";
+		        if ( lfmd-discovery-flags ) {
+		        	for-each ( lfmd-discovery-flags/* ) {
+			        	if ( name() != "lfmd-pdu-flags" ) {
+			        		var $myflag = substring-after( name(.) , "lfmd-flag-" );
+			        		expr jcs:printf( "%jcs" , $myflag ) _ ", ";
+								}
+								else if ( name() = "lfmd-pdu-flags" ) {
+									expr (.) _ ",";
+								}
+							}
+		        }
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+						expr "OAM receive statistics:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Information: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-information-pdus-received);
+					}
+					<td> {
+		        expr "Event: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-event-pdus-received);
+					}
+					<td> {
+		        expr "Variable request: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-variable-request-pdus-received);
+					}
+					<td> {
+		        expr "Variable response: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-variable-response-pdus-received);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr " Loopback control: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-loopback-control-pdus-received);
+					}
+					<td colspan="2"> {
+		        expr "Organization specific: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-organization-pdus-received);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM flags receive statistics:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Critical event: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-critical-event-received);
+					}
+					<td> {
+		        expr "Dying gasp: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-dying-gasp-received);
+					}
+					<td colspan="2"> {
+		        expr "Link fault: " _ (lfmd-statistics/lfmd-statistics-received/lfmd-link-fault-received);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM transmit statistics:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Information: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-information-pdus-transmitted);
+					}
+					<td> {
+		        expr "Event: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-event-pdus-transmitted);
+					}
+					<td> {
+		        expr "Variable request: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-variable-request-pdus-transmitted);
+					}
+					<td> {
+		        expr "Variable response: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-variable-response-pdus-transmitted);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+						expr "Loopback control: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-loopback-control-pdus-transmitted);
+					}
+					<td colspan="2"> {
+						expr "Organization specific: " _ (lfmd-statistics/lfmd-statistics-transmitted/lfmd-organization-pdus-transmitted);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM received symbol error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-symbol-error/lfmd-event-received-symbol-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-symbol-error/lfmd-event-received-symbol-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-symbol-error/lfmd-event-received-symbol-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-symbol-error/lfmd-event-received-symbol-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-symbol-error/lfmd-event-received-symbol-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM received frame error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-error/lfmd-event-received-frame-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-error/lfmd-event-received-frame-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-error/lfmd-event-received-frame-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-error/lfmd-event-received-frame-error-count);
+					}
+					<td colspan="2"> {
+						expr "Total errors: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-error/lfmd-event-received-frame-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM received frame period error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-period-error/lfmd-event-received-frame-period-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-period-error/lfmd-event-received-frame-period-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-period-error/lfmd-event-received-frame-period-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-period-error/lfmd-event-received-frame-period-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-period-error/lfmd-event-received-frame-period-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM received frame seconds error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-seconds-error/lfmd-event-received-frame-seconds-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-seconds-error/lfmd-event-received-frame-seconds-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-seconds-error/lfmd-event-received-frame-seconds-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		    		expr "Errors in period: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-seconds-error/lfmd-event-received-frame-seconds-error-count);
+					}
+					<td colspan="2"> {
+						expr "Total errors: " _ (lfmd-events/lfmd-events-received/lfmd-event-received-frame-seconds-error/lfmd-event-received-frame-seconds-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM transmitted symbol error event information:";
+					}
+				}
+				<tr> {
+			    <td> {
+						expr "Events: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-symbol-error/lfmd-event-transmitted-symbol-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-symbol-error/lfmd-event-transmitted-symbol-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-symbol-error/lfmd-event-transmitted-symbol-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-symbol-error/lfmd-event-transmitted-symbol-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-symbol-error/lfmd-event-transmitted-symbol-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM current symbol error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-symbol-error/lfmd-event-symbol-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-symbol-error/lfmd-event-symbol-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-symbol-error/lfmd-event-symbol-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-symbol-error/lfmd-event-symbol-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-symbol-error/lfmd-event-symbol-error-total-count);
+					}
+				}
+				<tr> {
+			    <td colspan="4" id="tableheaderleft"> {
+		        expr "OAM transmitted frame error event information:";
+					}
+				}
+				<tr> {
+					<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-frame-error/lfmd-event-transmitted-frame-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-frame-error/lfmd-event-transmitted-frame-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-frame-error/lfmd-event-transmitted-frame-error-threshold);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-frame-error/lfmd-event-transmitted-frame-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-transmitted/lfmd-event-transmitted-frame-error/lfmd-event-transmitted-frame-error-total-count);
+					}
+				}
+				<tr> {
+		    	<td colspan="4" id="tableheaderleft"> {
+		        expr "OAM current frame error event information:";
+					}
+				}
+				<tr> {
+		    	<td> {
+		        expr "Events: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-frame-error/lfmd-event-frame-count);
+					}
+					<td> {
+		        expr "Window: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-frame-error/lfmd-event-frame-error-window);
+					}
+					<td colspan="2"> {
+		        expr "Threshold: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-frame-error/lfmd-event-frame-error-threshold);
+					}
+				}
+				<tr> {
+					<td colspan="2"> {
+		        expr "Errors in period: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-frame-error/lfmd-event-frame-error-count);
+					}
+					<td colspan="2"> {
+		        expr "Total errors: " _ (lfmd-events/lfmd-events-current/lfmd-event-current-frame-error/lfmd-event-frame-error-total-count);
+					}
+				}
+				<tr> {
+					<td colspan="4" id="tableheaderleft"> {
+		        expr "Remote entity information:";
+					}
+				}
+				<tr> {
+			    <td colspan="2"> {
+		        expr "Remote MUX action: " _ (lfmd-peer-mux-action);
+					}
+					<td colspan="2"> {
+		        expr "Remote parser action: " _ (lfmd-peer-parser-action);
+					}
+				}
+				<tr> {
+			    <td colspan="2"> {
+		        expr "Discovery mode: " _ (lfmd-peer-config-mode);
+					}
+					<td colspan="2"> {
+		        expr "Unidirectional mode: " _ (lfmd-peer-config-unidirectional);
+					}
+				}
+				<tr> {
+		    	<td colspan="2"> {
+		        expr "Remote loopback mode: " _ (lfmd-peer-config-loopback);
+					}
+					<td colspan="2"> {
+		        expr "Link events: " _ (lfmd-peer-config-link-events);
+					}
+				}
+				<tr> {
+		    	<td colspan="4"> {
+						expr "Variable requests: " _ (lfmd-peer-config-variable-request);
+					}
+				}
+			}
+		}
+		else {
+			<p style="font-weight:bolder"> {
+				expr "OAM Ethernet Link-Fault-Management reports " _ $devicename _ ": interface \"" _ (lfmd-interface-name) _ "\" as Down.";
+			}
+		}
+		expr jcs:syslog("daemon.info", "SCRIPT_802.3AH_READOUT: Script action taken to display 802.3ah information.");
+	}
+}
+
+

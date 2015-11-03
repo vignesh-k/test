@@ -1,0 +1,1616 @@
+/* 
+	Script to check status of a new BNG after discovering it with the EMS.
+*/
+
+/*
+	Author: bcersows
+	Version: 1.05b
+	Date: 01.12.2014
+	Last Modified By: bcersows
+	###Script_NE - BNG ReadyForService Check.slax;v1.05b;2014.12.01
+*/
+
+/*
+	Changelog:
+	----------
+	1.03; 25.07.2014: 
+		- Added IS-IS and LDP amount check.
+		- Added check that PICs 4,5 got a 'P' in type, 9, 10 got a 'D'.
+		- The RMK IP are now pinged from the primary and the backup port of ae0, performing two switch-overs. 
+			Order depending on current active interface.
+		- Optical Diag warning tooltip made a bit clearer.
+		- Executes the AAA test two times as only the second will work.
+		08.08.2014:
+		- BNG LSR: No table row when interface not present.
+	1.04; 06.10.2014:
+		- Renamed X/G interfaces parameters.
+		- Added support for more than two LSR interfaces.
+		- Output the iCEAAA Scripts versions.
+		14.10.2014 - 29.10.2014:
+		- Ping tests for loopback changed. Specific source address for inet and inet6. Pinging different inet LB, forcing <inet6>. Packet Loss set to 100% when error while pinging.
+		- Also checked their behaviour (added an optional description). When provided <inet6>, use IPv6 as source address.
+		- Ping host now t-online.de. You are safe now, zdf.de. :D
+		- TDCN interfaces also read out via config.
+		- Alarms table without border.
+	1.04b; 03.11.2014:
+		- Added check for config version.
+	1.05; 14.11.2014:
+		- Break whole check when missing configuration (loopback IPs) is detected.
+	1.05b; 01.12.2014:
+		- TDCN interfaces can no contain different description ("_rmk_", "#dcn_bng#") too.
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns str = "http://exslt.org/strings";
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "NE - BNG ReadyForService Check" */
+/* @DESCRIPTION = "Lists information about the status of a BNG." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+/* @PROMOTE = "Yes" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+mvar $errorReport = <errors> "Error Report";
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $myRpc;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "ReadyForService Check BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+				/* Styles that do not need to be in the library. */
+				<style> {
+					<xsl:text disable-output-escaping="yes">
+						"a.overviewLinks { text-decoration: none; }
+						a.overviewLinks:hover { text-decoration: underline; }"
+					;
+				}
+			}
+			<BODY> {
+				copy-of bcersows:insertExportWindowButton();
+				<script> {
+					<xsl:text disable-output-escaping="yes">
+						"var moveTelekomDiv, myTimer, divWidth;
+						function moveTelekom() {
+							try {
+								if ( typeof myTimer !== 'undefined' || myTimer ) {
+									clearTimeout( myTimer );
+								}
+								moveTelekomDiv = document.getElementById('moveTelekom');
+								divWidth = parseInt( moveTelekomDiv.style.width );
+								var width = window.innerWidth || d.documentElement.clientWidth || document.getElementsByTagName('body')[0].clientWidth;
+								var top = Math.floor( Math.random() * 80 );
+								moveTelekomDiv.style.left = width + 5 + 'px';
+								moveTelekomDiv.style.top = top + '%';
+								myTimer = setTimeout('timerStep()', 10);
+							} catch (e) { alert(e); }
+						}
+						function timerStep() {
+							try {
+								var y = moveTelekomDiv.offsetLeft;
+								moveTelekomDiv.style.left = y - 5 + 'px';
+								if ( y - 5 + divWidth < 0 ) {
+								} else {
+									myTimer = setTimeout('timerStep()', 10);
+								}
+							} catch (e) { alert(e); }
+						}"
+					;
+				}
+				<div id="moveTelekom" class="unselectable magenta" style="position: absolute; left: -300px; width: 230px; background-color: transparent; text-align: center; font-size: 45px; text-shadow: 1.5px 1.5px #000, -1px -1px #fff, 1px -1px #fff, -1px 1px #fff; z-index: 667; font-family: 'TeleLogo', 'TeleGroteskNor', 'Cambria', 'Traditional Arabic', serif;">"TELEKOM";
+				<span class="unselectable magenta bold" style="position: absolute; top: 0px; right: 5px; font-size: 11px;" onclick="moveTelekom(); return false;"> "ReadyForService Check";
+				
+				<div id="whole"> {
+					copy-of bcersows:insertHeaderBig( $myDevice );
+					copy-of bcersows:insertCompletionTest();
+					
+					if ( $connection ) { } else {	
+						<div class="error"> {
+							expr "Konnte keine Verbindung aufbauen."; <br>;
+							expr "Abbruch folgt.";
+						}
+					}
+					
+					copy-of bcersows:insertSoftwareInformation( $connection );
+					
+					/* Get all configured interfaces. */
+					set $myRpc = <get-configuration inherit="inherit"> {
+						<configuration> {
+							<interfaces> {
+								<interface>;
+							}
+						}
+					}
+					var $varConfiguredInterfaces = jcs:execute( $connection, $myRpc );
+					call checkErrors( $resultsNodeSet = $varConfiguredInterfaces, $connection, $msg = "Fehler beim Auslesen der Interfaces." );
+					
+					/* /device/configuration/interfaces/interface[unit/family/iso][unit/family/inet][unit/family/inet6][unit/family/mpls]/name/text() */
+					var $myLSRInterfaces := {
+						/*<interface> "xe-9/0/0";
+						<interface> "xe-10/0/0";*/
+						for-each ( $varConfiguredInterfaces/interfaces/interface[unit/family/iso][unit/family/inet][unit/family/inet6][unit/family/mpls]/name ) {
+							<interface> .;
+						}
+					}
+					/* /device/configuration/interfaces/interface[gigether-options/ieee-802.3ad][contains( description, "#dcn_rd/msan#" )]/name/text() */
+					var $myTDCNInterfaces := {
+						/*<interface> "ge-4/0/9";
+						<interface> "ge-5/0/9";*/
+						for-each ( $varConfiguredInterfaces/interfaces/interface[gigether-options/ieee-802.3ad][contains( description, "#dcn_rd/msan#" ) or contains( description, "#dcn_rmk_rd/msan#" ) or contains( description, "#dcn_bng#" )]/name ) {
+							<interface> .;
+						}
+					}
+					
+					<p> {
+						<a style="text-transform: uppercase; color: #E20074; font-weight: bold;" href="#AnchorOverviews"> {
+							<image src="./../mainui/images/discover-select-all.png" style="vertical-align: top;" title="GO TO OVERVIEW" alt=" " height="16px">;
+							expr "Go to overview";
+						}
+					}
+					/* Get the primary address of the lo0 interface. */
+					/* No need for another request, using $varConfiguredInterfaces. */
+					/*set $myRpc = <get-configuration inherit="inherit"> {
+						<configuration> {
+							<interfaces> {
+								<interface> {
+									<name> "lo0";
+								}
+							}
+						}
+					}
+					set $results = jcs:execute( $connection, $myRpc );
+					call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );*/
+					var $varPingSourceAddress = jcs:regex( "([0-9\.]+).*", $varConfiguredInterfaces/interfaces/interface[name="lo0"]/unit[name="0"]/family/inet/address[primary][preferred]/name )[2];
+					var $varPingSourceAddressV6 = jcs:regex( "([a-f0-9:]+).*", $varConfiguredInterfaces/interfaces/interface[name="lo0"]/unit[name="0"]/family/inet6/address/name )[2];
+					var $varPingSourceAddressUnit3 = jcs:regex( "([0-9\.]+).*", $varConfiguredInterfaces/interfaces/interface[name="lo0"]/unit[name="3"]/family/inet/address/name )[2];
+					<p> "Loopback address of device is " _ $varPingSourceAddress _ ". Inet6 loopback is " _ $varPingSourceAddressV6 _ ". ETH3 address is " _ $varPingSourceAddressUnit3 _ ".";
+					
+					/* Only continue when loopback IPs are configured. */
+					if ( jcs:empty( $varPingSourceAddress ) || jcs:empty( $varPingSourceAddressV6 ) || jcs:empty( $varPingSourceAddressUnit3 ) ) {
+						<p style="background-color: RED;"> {
+							expr "Not all of the required units are configured. Please check ";
+							if ( jcs:empty( $varPingSourceAddress ) ) {
+								expr "lo0.0's inet";
+								if ( jcs:empty( $varPingSourceAddressV6 ) ) { expr " and "; }
+							}
+							if ( jcs:empty( $varPingSourceAddressV6 ) ) {
+								expr "lo0.0's inet6";
+								if ( jcs:empty( $varPingSourceAddressUnit3 ) ) { expr " and "; }
+							}
+							if ( jcs:empty( $varPingSourceAddressUnit3 ) ) {
+								expr "lo0.3's inet";
+							}
+							expr " address(es).";
+						}
+					} else {
+					
+						/* Start single sections. */
+						<div> {
+							<p class="bold" id="AnchorConfigurationVersion">{
+								expr "Configuration Version";
+							}
+							set $myRpc = <get-configuration> {
+								<configuration> {
+									<snmp> {
+										<location>;
+									}
+								}
+							}
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							if ( !$results//self::xnm:error ) {
+								var $myConfigVersion = jcs:regex( ".*BNG-Konfig: (.*)$", $results/snmp/location )[2];
+								if ( $myConfigVersion != "" ) {
+									<p> {
+										expr "Configuration version is ";
+										<span class="bold"> $myConfigVersion;
+										expr ".";
+									}
+								} else {
+									<p class="majorError"> {
+										expr "No configuration version detected."; <br>;
+										expr "Content of '/device/configuration/snmp/location' is " _ $results/snmp/location _ "."; <br>;
+										expr "Device was obviously not configured via an Initial Setup Configlet.";
+									}
+									call addToErrorList ( $loc = "Configuration Version" );
+								}
+							} else {
+								call addToErrorList ( $loc = "Configuration Version" );
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorPingfromBNGtoLSR">{
+								expr "Ping from BNG to LSR";
+							}
+							<table class="twoColumnTable middle"> {
+								<tr> {
+									<th> "Interface Name";
+									<th> "Admin/Oper Status";
+									<th> "IP";
+									<th> "LSR IP";
+									<th> "Ping Success";
+								}
+								for-each ( $myLSRInterfaces/interface ) {
+									set $myRpc = <get-interface-information> {
+										<terse>;
+										<interface-name> .;
+									}
+									set $results = jcs:execute( $connection, $myRpc );
+									call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+									if ( !$results//self::xnm:error ) {
+										<tr> {
+											<td> $results/physical-interface/name;
+											<td> $results/physical-interface/admin-status _ "/" _ $results/physical-interface/oper-status;
+											var $logIP = $results/physical-interface/logical-interface/address-family/interface-address/ifa-local;
+											<td> $logIP _ " ";
+											if ( $logIP ) {
+												mvar $incrLogIP = jcs:regex( "([0-9]+\.[0-9]+\.[0-9]+\.)([0-9]+).*", $logIP );
+												set $incrLogIP = $incrLogIP[2] _ "" _ ( number( $incrLogIP[3] ) + 1 );
+												<td> $incrLogIP;
+												set $myRpc = <ping> {
+													<count> "3";
+													<rapid>;
+													<host> $incrLogIP;
+													<source> $varPingSourceAddress;
+												}
+												set $results = jcs:execute( $connection, $myRpc );
+												call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+												if ( $results/ping-success ) {
+													<td class="infoError"> "Success";
+												} else {
+													<td class="majorError"> $results/ping-failure;
+													call addToErrorList ( $loc = "Ping from BNG to LSR" );
+												}
+											}
+										}
+									}
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorLo0Status">{ 
+								expr "Lo0 Status";
+							}
+							<table class="twoColumnTable wide"> {
+								<tr> {
+									<th> "Interface Name";
+									<th> "Admin/Oper Status";
+									<th> "Protocol";
+									<th> "Local";
+									<th> "Remote";
+								}
+								set $myRpc = <get-interface-information> {
+									<terse>;
+									<interface-name> "lo0.0";
+								}
+								set $results = jcs:execute( $connection, $myRpc );
+								call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+								for-each ( $results/logical-interface/address-family[contains( address-family-name, "inet" )]/interface-address/ifa-local ) {
+									<tr> {
+										<td> ./../../../name;
+										<td> ./../../../admin-status _ "/" _ ./../../../oper-status;
+										<td> ./../../address-family-name;
+										<td> . _ " ";
+										<td> ./../ifa-destination _ " ";
+									}
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorOpticsDiagnostics">{ 
+								expr "Optics Diagnostics";
+							}
+							<table class="twoColumnTable wide"> {
+								<tr> {
+									<th> "Interface Name";
+									<th> "Laser Output Power (mw)";
+									<th> "Laser output power (dbm)";
+									<th> "Laser rx Power (mw)";
+									<th> "Laser rx power (dbm)";
+								}
+								for-each ( $myTDCNInterfaces/interface | $myLSRInterfaces/interface  ) {
+									<tr> {
+										set $myRpc = <get-interface-optics-diagnostics-information> {
+											<interface-name> .;
+										}
+										set $results = jcs:execute( $connection, $myRpc );
+										call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+										if ( $results/physical-interface/name ) {
+											<td> $results/physical-interface/name;
+											<td> $results/physical-interface/optics-diagnostics/laser-output-power;
+											var $outputPowerDBM = $results/physical-interface/optics-diagnostics/laser-output-power-dbm;
+											var $outputPowerDBMThresholdHigh = $results/physical-interface/optics-diagnostics/laser-tx-power-high-warn-threshold-dbm;
+											var $outputPowerDBMThresholdLow = $results/physical-interface/optics-diagnostics/laser-tx-power-low-warn-threshold-dbm;
+											var $outputPowerDBMThresholdString = {
+												expr "Warning Thresholds: ";
+												expr "high: " _ $outputPowerDBMThresholdHigh _ "dbm, ";
+												expr "low: " _ $outputPowerDBMThresholdLow _ "dbm.";
+											}
+											/* If is in valid range. */
+											if ( $outputPowerDBM > $outputPowerDBMThresholdLow && $outputPowerDBM < $outputPowerDBMThresholdHigh ) {
+												<td class="infoError" title=$outputPowerDBMThresholdString> $outputPowerDBM;
+											} else {
+												<td class="majorError" title=$outputPowerDBMThresholdString> $outputPowerDBM;
+												call addToErrorList ( $loc = "Optics Diagnostics" );
+											}
+											<td> $results/physical-interface/optics-diagnostics/laser-rx-optical-power _ $results/physical-interface/optics-diagnostics/rx-signal-avg-optical-power _ "";
+											var $outputPowerRXDBM = {
+												/* Xe and ge interfaces have different XML structures in this part. Only one exists and will be used. */
+												expr $results/physical-interface/optics-diagnostics/laser-rx-optical-power-dbm;
+												expr $results/physical-interface/optics-diagnostics/rx-signal-avg-optical-power-dbm;
+											}
+											var $outputPowerRXDBMThresholdHigh = $results/physical-interface/optics-diagnostics/laser-rx-power-high-warn-threshold-dbm;
+											var $outputPowerRXDBMThresholdLow = $results/physical-interface/optics-diagnostics/laser-rx-power-low-warn-threshold-dbm;
+											var $outputPowerRXDBMThresholdString = {
+												expr "Thresholds: ";
+												expr "high: " _ $outputPowerRXDBMThresholdHigh _ "dbm, ";
+												expr "low: " _ $outputPowerRXDBMThresholdLow _ "dbm.";
+											}
+											/* If is in valid range. */
+											if ( $outputPowerRXDBM > $outputPowerRXDBMThresholdLow && $outputPowerRXDBM < $outputPowerRXDBMThresholdHigh ) {
+												<td class="infoError" title=$outputPowerRXDBMThresholdString> $outputPowerRXDBM;
+											} else {
+												<td class="majorError" title=$outputPowerRXDBMThresholdString> $outputPowerRXDBM;
+												call addToErrorList ( $loc = "Optics Diagnostics" );
+											}
+										} else {
+											<td class="majorError"> .;
+											<td> "Interface not configured/up.";
+											<td> " ";
+											<td> " ";
+											<td> " ";
+											call addToErrorList ( $loc = "Optics Diagnostics" );
+										}
+									}
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorPings">{ 
+								expr "Pings";
+							}
+							
+							/* No need for another request, using $varConfiguredInterfaces. */
+							/*set $myRpc = <get-configuration inherit="inherit"> {
+								<configuration> {
+									<interfaces> {
+										<interface> {
+											<name> "lo0";
+											<unit> {
+												<name> "0";
+												<family> {
+													<inet> {
+														<address>;
+													}
+													<inet6> {
+														<address>;
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );*/
+
+							var $myPingHosts := {
+								<target> {
+								/* Check IPv4 DNS resolve. */
+									<ip> "t-online.de";
+									<desc> "IPv4 DNS.";
+								}
+								<target> {
+								/* Check IPv6 DNS resolve. */
+									<ip> "t-online.de";
+									<desc> "IPv6 DNS.";
+									<inet6>;
+								}
+								<target> {
+									/* Check something. */
+									<ip> "91.197.28.69";
+									<desc> "BICO-provided IP.";
+								}
+							}
+				
+							for-each ( $myPingHosts/target ) {
+								<div> {
+									var $pingTargetIP = ./ip;
+									<p> {
+										expr $pingTargetIP _ " ";
+										if ( ./desc ) {
+											expr "(" _ ./desc _ ")";
+										}
+									}
+									set $myRpc = <ping> {
+										<count> "3";
+										<rapid>;
+										<host> $pingTargetIP;
+										var $pingTargetFamily = jcs:parse-ip( $pingTargetIP )[2];
+										if ( $pingTargetFamily == "inet6" || ./inet6 ) {
+											<source> $varPingSourceAddressV6;
+											<inet6>;
+										} else if( $pingTargetFamily == "inet" ) {
+											<source> $varPingSourceAddress;
+										}
+									}
+									set $results = jcs:execute( $connection, $myRpc );
+									call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+									var $packetLoss = {
+										if ( $results/probe-results-summary/packet-loss ) {
+											expr $results/probe-results-summary/packet-loss;
+										} else {
+											expr "100";
+										}
+									}
+									<p class="lpadding15"> {
+										expr " Packet Loss: ";
+										if ( $packetLoss == 0 ) {
+											<span style="color: GREEN;"> $packetLoss _ "%";
+										} else {
+											<span style="color: RED;"> $packetLoss _ "%";
+											call addToErrorList ( $loc = "Pings" );
+										}
+										expr ".";
+									
+									}
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorManagementDCN">{ 
+								expr "Management DCN";
+							}
+							
+							/* Get the IPs for RMK RD and next-hop. */
+							set $myRpc = <get-configuration inherit="inherit"> {
+								<configuration> {
+									<routing-instances> {
+										<instance> {
+											<name> "CPE-MGMT";
+											<forwarding-options> {
+												<dhcp-relay> {
+													<server-group> {
+														<server-group> {
+															<name> "ICEAAA-DEFAULT";
+															<address>;
+														}
+													}
+												}
+											}
+											<routing-options> {
+												<static> {
+													<route> {
+														<name> "0.0.0.0/0";
+														<next-hop>;
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+							var $configResults = jcs:execute( $connection, $myRpc );
+							
+							/* The just received IPs for RMK RD in an iterable and maybe expandable set. */
+							var $myRMKRDPingTargets := {
+								for-each ( $configResults/routing-instances/instance/forwarding-options/dhcp-relay/server-group/server-group/address ) {
+									<IP> ./name;
+								}
+							}
+							
+							<table class="twoColumnTable xwide"> {
+								<tr> {
+									<th> "Interface";
+									<th> "Admin";
+									<th> "Link";
+									<th> "Protocol";
+									<th> "Local";
+									<th> "Remote";
+								}
+								for-each ( $myTDCNInterfaces/interface ) {
+									set $myRpc = <get-interface-information> {
+										<terse>;
+										<interface-name> .;
+									}
+									set $results = jcs:execute( $connection, $myRpc );
+									call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+									<tr> {
+										<td> $results/physical-interface/name;
+										if ( $results/physical-interface/admin-status == "up" ) {
+											<td style="color: GREEN;"> $results/physical-interface/admin-status;
+										} else {
+											<td style="color: RED;"> $results/physical-interface/admin-status;
+											call addToErrorList ( $loc = "Management DCN" );
+										}
+										if ( $results/physical-interface/oper-status == "up" ) {
+											<td style="color: GREEN;"> $results/physical-interface/oper-status;
+										} else {
+											<td style="color: RED;"> $results/physical-interface/oper-status;
+											call addToErrorList ( $loc = "Management DCN" );
+										}
+									}
+									for-each ( $results/physical-interface/logical-interface ) {
+										<tr> {
+											<td> ./name;
+											if ( ./admin-status == "up" ) {
+												<td style="color: GREEN;"> ./admin-status;
+											} else {
+												<td style="color: RED;"> ./admin-status;
+												call addToErrorList ( $loc = "Management DCN" );
+											}
+											if ( ./oper-status == "up" ) {
+												<td style="color: GREEN;"> ./oper-status;
+											} else {
+												<td style="color: RED;"> ./oper-status;
+												call addToErrorList ( $loc = "Management DCN" );
+											}
+											<td> ./address-family/address-family-name;
+											<td> "--> " _ ./address-family/ae-bundle-name;
+										}
+									}
+								}
+							}
+							
+							/* Pings next-hop and RMK RDs.. */
+							<div> {							
+								<p> {
+									var $nextHopIP = $configResults/routing-instances/instance/routing-options/static/route/next-hop;
+									expr "Pinging next-hop inet address (" _ $nextHopIP _ ").. ";
+									set $myRpc = <ping> {
+										<count> "3";
+										<rapid>;
+										<host> $nextHopIP;
+										<routing-instance> "CPE-MGMT";
+									}
+									set $results = jcs:execute( $connection, $myRpc );
+									call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+									if ( $results/ping-success ) {
+										<span style="color: GREEN;" class="lpadding15"> "Success";
+									} else {
+										<span style="color: RED;" class="lpadding15"> $results/ping-failure;
+										call addToErrorList ( $loc = "Management DCN" );
+									}
+								}
+								
+								/* Ping the RMK RD addresses. Source is lo0's unit 3 inet address. */
+								if ( $varPingSourceAddressUnit3 ) {
+									
+									var $ae0IterationOrder = {
+										var $rpcGetRedundancyStatus =  <get-redundancy-status> {
+											<interface-name> "ae0";
+										}
+										set $results = jcs:execute( $connection, $rpcGetRedundancyStatus );
+										var $ae0CurrentActive = str:replace( $results/interface-redundancy/state, "On ", "" );
+										/* If current active interface is the secondary one, iterate $ae0States in reverse order. */
+										if ( $ae0CurrentActive == "secondary" ) {
+											expr "descending";
+										} else {
+											expr "ascending";
+										}
+									}
+									
+									var $ae0States := {
+										<state> {
+											<index> 0;
+											<name> "primary";
+											<rpc> {
+												<switch-redundancy-interface-to-secondary> {
+													<interface-name> "ae0";
+												}
+											}
+											<switchto> "secondary";
+										}
+										<state> {
+											<index> 1;
+											<name> "secondary";
+											<rpc> {
+												<revert-redundancy-interface-to-primary> {
+													<interface-name> "ae0";
+												}
+											}
+											<switchto> "primary";
+										}
+									}
+									
+									for-each ( $ae0States/state ) {
+										<xsl:sort select="index" order=$ae0IterationOrder>;
+										var $ae0State = .;
+										for-each ( $myRMKRDPingTargets/IP ) {
+											<p> {
+												expr "Pinging RMK RD address " _ . _ " inet address from source " _ $varPingSourceAddressUnit3 _ " from " _ $ae0State/name _ " port.. ";
+												set $myRpc = <ping> {
+													<count> "3";
+													<rapid>;
+													<host> .;
+													<routing-instance> "CPE-MGMT";
+													<source> $varPingSourceAddressUnit3;
+												}
+												set $results = jcs:execute( $connection, $myRpc );
+												call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+												if ( $results/ping-success ) {
+													<span style="color: GREEN;" class="lpadding15"> "Success";
+												} else {
+													<span style="color: RED;" class="lpadding15"> $results/ping-failure;
+													call addToErrorList ( $loc = "Management DCN" );
+												}
+											}
+										}
+										
+										/* Switch port.. */
+										set $results = jcs:execute( $connection, $ae0State/rpc );
+										call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Error while changing port of ae0." );
+										<p style="font-size: 9;"> "Switched to " _ $ae0State/switchto _ " port of ae0.";
+									}
+								} else {
+									<p> {
+										<span style="color: RED;" class="lpadding15"> "No inet address on unit 3 of interface lo0.";
+									}
+									call addToErrorList ( $loc = "Management DCN" );
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorChassisEnvironment">{ 
+								expr "Chassis Environment";
+							}
+							<table class="twoColumnTable wide"> {
+								<tr> {
+									<th> "class";
+									<th> "item";
+									<th> "status";
+									<th> "measurement";
+								}
+								
+								set $myRpc = "get-environment-information";
+								set $results = jcs:execute( $connection, $myRpc );
+								call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+								
+								mvar $EIclass = "";
+								
+								for-each ( $results/environment-item ) {
+									<tr> {
+										if ( ./class && $EIclass != ./class ) {
+											set $EIclass = ./class;
+											<td> $EIclass _ " ";
+										} else {
+											<td> " ";
+										}
+										<td> ./name;
+										if ( ./status == "OK" ) {
+											<td class="infoError alignCenter"> ./status;
+										} else {
+											<td class="majorError"> ./status;
+											call addToErrorList ( $loc = "Chassis Environment" );
+										}
+										<td> ./temperature _ ./comment;
+									}
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorAlarms">{ 
+								expr "Alarms";
+							}
+							
+							set $myRpc = "get-alarm-information";
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							<p> {
+								if ( $results/alarm-summary/no-active-alarms ) {
+									<span style="color: GREEN;" class="lpadding15"> "No alarms currently active.";
+								} else if( $results/alarm-summary/active-alarm-count ) {
+									<span style="color: RED;" class="lpadding15"> $results/alarm-summary/active-alarm-count _ " alarms currently active.";
+									call addToErrorList ( $loc = "Alarms" );
+								}
+							}
+							if ( $results/alarm-detail ) {
+								<table class="xwide"> {
+									<tr> {
+										<th> { expr "Alarm Time"; }
+										<th> { expr "Class"; }
+										<th> { expr "Description"; }
+										<th> { expr "Type"; }
+									}
+									for-each ( $results/alarm-detail ) {
+										var $alarmType = {
+											if ( ./alarm-class == "Minor" ) {
+												expr "minorError";
+											} else if ( ./alarm-class == "Major" ) {
+												expr "majorError";
+											} else {
+												expr " ";
+											}
+										}
+										<tr> {
+											<td> { expr ./alarm-time; }
+											<td class="" _ $alarmType _ ""> { expr ./alarm-class; }
+											<td title="" _ ./alarm-description _ ""> { expr ./alarm-short-description; }
+											<td> { expr ./alarm-type; }
+										}
+									}
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorRouting-Engines">{ 
+								expr "Routing-Engines";
+							}
+							
+							set $myRpc = "get-route-engine-information";
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							<p> {
+								if ( $results/route-engine[slot="0"]/mastership-state == "master" ) {
+									<span style="color: GREEN;" class="lpadding15"> "Routing-Engine 0 is master.";
+								} else {
+									<table style="color: RED;" class="lpadding15"> {
+										<tr> {
+											<th> "RE slot";
+											<th> "mastership state";
+										}
+										for-each ( $results/route-engine ) {
+											<tr> {
+												<td> ./slot;
+												<td> ./mastership-state;
+											}
+										}
+									}
+									call addToErrorList ( $loc = "Routing-Engines" );
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorFPCs">{ 
+								expr "FPCs";
+							}
+							
+							set $myRpc = "get-fpc-information";
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							<table class="xwide"> {
+								<tr> {
+									<th> { expr "Slot"; }
+									<th> { expr "State"; }
+									<th> { expr "Temp (C)"; }
+									<th> { expr "CPU Total (%)"; }
+									<th> { expr "CPU Interrupt (%)"; }
+									<th> { expr "Memory DRAM (MB)"; }
+									<th> { expr "Heap (%)"; }
+									<th> { expr "Buffer (%)"; }
+								}
+								for-each ( $results/fpc ) {
+									var $myFPCSlot = ./slot;
+									var $alarmState = {
+										if ( $myFPCSlot == 4 || $myFPCSlot == 5 || $myFPCSlot == 9 || $myFPCSlot == 10 ) {
+											if ( ./state != "Online" ) {
+												expr "majorError";
+												call addToErrorList ( $loc = "FPCs" );
+											}
+										} else if ( $myFPCSlot == 11 ) {
+											if ( ./state != "Empty" ) {
+												expr "minorError";
+												/*call addToErrorList ( $loc = "FPCs" );*/
+											}
+										}
+										expr " ";
+									}
+									var $alarmDRAM = {
+										if ( $myFPCSlot == 4 || $myFPCSlot == 5 || $myFPCSlot == 9 || $myFPCSlot == 10 ) {
+											if ( ./memory-dram-size != "2048" ) {
+												expr "majorError";
+												call addToErrorList ( $loc = "FPCs" );
+											}
+										}
+										expr " ";
+									}
+									<tr> {
+										<td> { expr $myFPCSlot; }
+										<td class="" _ $alarmState _ ""> { expr ./state; }
+										<td> { expr ./temperature _ " "; }
+										<td> { expr ./cpu-total _ " "; }
+										<td> { expr ./cpu-interrupt _ " "; }
+										<td class="" _ $alarmDRAM _ ""> { expr ./memory-dram-size _ " "; }
+										<td> { expr ./memory-heap-utilization _ " "; }
+										<td> { expr ./memory-buffer-utilization _ " "; }
+									}
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorPICs">{ 
+								expr "PICs";
+							}
+							
+							set $myRpc = "get-pic-information";
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							<table id="FPCsTable" class="wide"> {
+								<tr> {
+									<th> { expr "FPC Slot"; }
+									<th> { expr "PIC Slot"; }
+									<th> { expr "State"; }
+									<th> { expr "Type"; }
+								}
+								for-each ( $results/fpc[pic] ) {
+									var $myFPCSlot = ./slot;
+									/* Check if slots 4,5 got a 'P' in the description or slots 9,10 a 'D'. */
+									if ( $myFPCSlot == "4" || $myFPCSlot == "5" || $myFPCSlot == "9" || $myFPCSlot == "10" ) {
+										if ( ( $myFPCSlot == "4" || $myFPCSlot == "5" ) && contains( ./description, "P" ) ) {
+										} else if ( ( $myFPCSlot == "9" || $myFPCSlot == "10" ) && contains( ./description, "D" ) ) {
+										} else {
+											<p style="color: red; margin: 1px;"> "In slot " _ $myFPCSlot _ " is either no 'P' in type when slot is [4,5] or no 'D' when slot is [9, 10].";
+											call addToErrorList ( $loc = "PICs" );
+										}
+									}
+									for-each ( ./pic ) {
+										var $alarmState = {
+											if ( ./pic-state == "Online" ) {
+												expr "infoError";
+											} else {
+												expr "majorError";
+												call addToErrorList ( $loc = "PICs" );
+											}
+											expr " ";
+										}
+										<tr> {
+											<td> { expr $myFPCSlot; }
+											<td> { expr ./pic-slot; }
+											<td class="" _ $alarmState _ ""> { expr ./pic-state; }
+											<td> { expr ./pic-type _ " "; }
+										}
+									}
+								}
+							}
+							<script> {
+								expr "removeMultiLines( 'FPCsTable', 0 );";
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorHardwareModels">{ 
+								expr "Hardware Models";
+							}
+							
+							set $myRpc = <get-chassis-inventory> {
+								<models>;
+							}
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							<table class="xwide"> {
+								<tr> {
+									<th> { expr "Item"; }
+									<th> { expr "version"; }
+									<th> { expr "part number"; }
+									<th> { expr "serial number"; }
+									<th> { expr "FPU model number"; }
+								}
+								for-each ( $results/chassis/chassis-module ) {
+									<tr> {
+										<td> { expr ./name; }
+										<td> { expr ./version; }
+										<td> { expr ./part-number; }
+										<td> { expr ./serial-number; }
+										<td> { expr ./model-number; }
+									}
+									for-each ( current()/chassis-sub-module ) {
+										<tr> {
+											<td class="lpadding15"> { expr ./name; }
+											<td> { expr ./version; }
+											<td> { expr ./part-number; }
+											<td> { expr ./serial-number; }
+											<td> { expr ./model-number; }
+										}
+									}
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorServices">{ 
+								expr "Services";
+							}
+							
+							set $myRpc = <get-configuration inherit="inherit"> {
+								<configuration> {
+									<system> {
+										<services> {
+											<ftp>;
+											<ssh>;
+											<netconf>;
+											<telnet>;
+										}
+									}
+								}
+							}
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							<div> {
+								<p class="lpadding5"> {
+									expr "FTP is ";
+									if ( $results/system/services/ftp ) {
+										<span style="color: RED;"> "configured";
+										call addToErrorList ( $loc = "Services" );
+									} else {
+										<span style="color: GREEN;"> "not configured";
+									}
+									expr ".";
+								}
+							}
+							<div> {
+								<p class="lpadding5"> {
+									expr "Telnet is ";
+									if ( $results/system/services/telnet ) {
+										<span style="color: RED;"> "configured";
+										call addToErrorList ( $loc = "Services" );
+									} else {
+										<span style="color: GREEN;"> "not configured";
+									}
+									expr ".";
+								}
+							}
+							<div> {
+								<p class="lpadding5"> {
+									expr "SSH is ";
+									if ( $results/system/services/ssh ) {
+										<span style="color: GREEN;"> "configured";
+									} else {
+										<span style="color: RED;"> "not configured";
+										call addToErrorList ( $loc = "Services" );
+									}
+									expr ".";
+								}
+							}
+							<div> {
+								<p class="lpadding5"> {
+									expr "Netconf is ";
+									if ( $results/system/services/netconf ) {
+										<span style="color: GREEN;"> "configured";
+									} else {
+										<span style="color: RED;"> "not configured";
+										call addToErrorList ( $loc = "Services" );
+									}
+									expr ".";
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorIS-ISAdjacency">{ 
+								expr "IS-IS Adjacency";
+							}
+							
+							set $myRpc = "get-isis-adjacency-information";
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							var $varAmountISISAdjacencies = count( $results/isis-adjacency[adjacency-state == "Up"] );
+							if ( $varAmountISISAdjacencies < 2 ) {
+								<p style="color: RED;"> "There are only " _ $varAmountISISAdjacencies _ " IS-IS adjacencies with status 'Up'!";
+								call addToErrorList ( $loc = "IS-IS Adjacency" );
+							}
+							
+							if ( $results/isis-adjacency ) {
+								<table class="wide"> {
+									<tr> {
+										<th> { expr "Interface"; }
+										<th> { expr "System"; }
+										<th> { expr "L"; }
+										<th> { expr "State"; }
+										<th> { expr "Hold (secs)"; }
+										<th> { expr "SNPA"; }
+									}
+									for-each ( $results/isis-adjacency ) {
+										<xsl:sort select="interface-name">;
+										var $nameCheck = {
+											var $myCurrentIF = ./interface-name;
+											mvar $wasInInterfaces = "false";
+											for-each ( $myLSRInterfaces/interface ) {
+												if ( contains( $myCurrentIF, . ) ) {
+													set $wasInInterfaces = "true";
+												}	
+											}
+											if ( $wasInInterfaces == "false" ) {
+												expr "majorError";
+												call addToErrorList ( $loc = "IS-IS Adjacency" );
+											}
+											expr " ";
+										}
+										var $stateCheck = {
+											if ( ./adjacency-state != "Up" ) {
+												expr "majorError";
+												call addToErrorList ( $loc = "IS-IS Adjacency" );
+											}	
+											expr " ";
+										}
+										<tr> {
+											<td class="" _ $nameCheck _ ""> { expr ./interface-name; }
+											<td> { expr ./system-name _ " "; }
+											<td> { expr ./level _ " "; }
+											<td class="" _ $stateCheck _ ""> { expr ./adjacency-state _ " "; }
+											<td> { expr ./holdtime _ " "; }
+											<td> { expr ./snpa _ " "; }
+										}
+									}
+								}
+							} else {
+								<p style="color: RED;"> "No IS-IS interfaces.";
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorLDP">{ 
+								expr "LDP";
+							}
+							
+							set $myRpc = "get-ldp-session-information";
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							var $varAmountLDPSessions = count( $results/ldp-session[ldp-connection-state == "Open"][ldp-session-state == "Operational"] );
+							if ( $varAmountLDPSessions < 2 ) {
+								<p style="color: RED;"> "There are only " _ $varAmountLDPSessions _ " operational and open LDP sessions!";
+								call addToErrorList ( $loc = "LDP" );
+							}
+							
+							if ( $results/ldp-session ) {
+								<table class="wide"> {
+									<tr> {
+										<th> { expr "Address"; }
+										<th> { expr "State"; }
+										<th> { expr "Connection"; }
+										<th> { expr "Hold Time (secs)"; }
+										<th> { expr "Adv. Mode"; }
+									}
+									for-each ( $results/ldp-session ) {
+										var $stateCheck = {
+											if ( ./ldp-session-state != "Operational" ) {
+												expr "majorError";
+												call addToErrorList ( $loc = "LDP" );
+											}	
+											expr " ";
+										}
+										<tr> {
+											<td> { expr ./ldp-neighbor-address; }
+											<td class="" _ $stateCheck _ ""> { expr ./ldp-session-state _ " "; }
+											<td> { expr ./ldp-connection-state _ " "; }
+											<td> { expr ./ldp-remaining-time _ " "; }
+											<td> { expr ./ldp-session-adv-mode _ " "; }
+										}
+									}
+								}
+							} else {
+								<p style="color: RED;"> "No LDP addresses.";
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorBGPSummary">{ 
+								expr "BGP Summary";
+							}
+							
+							set $myRpc = "get-bgp-summary-information";
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							if ( count( $results/bgp-peer[peer-state == "Established"] ) != 4 ) {
+								<p style="color: RED;"> "There are " _ count( $results/bgp-peer[peer-state == "Established"] ) _ " established peers instead of 4!";
+								call addToErrorList ( $loc = "BGP Summary" );
+							}
+							
+							<table class="wide"> {
+								<tr> {
+									<th> { expr "Peer"; }
+									<th> { expr "AS"; }
+									<th> { expr "InPkt"; }
+									<th> { expr "OutPkt"; }
+									<th> { expr "OutQ"; }
+									<th> { expr "Flaps"; }
+									<th> { expr "Last Up/Down"; }
+									<th> { expr "State"; }
+								}
+								for-each ( $results/bgp-peer[peer-state == "Established"] ) {
+									<xsl:sort select="peer-address">;
+									var $ASCheck = {
+										if ( ./peer-as != "3320" ) {
+											expr "majorError";
+											call addToErrorList ( $loc = "BGP Summary" );
+										}
+										expr " ";
+									}
+									<tr> {
+										<td> { expr ./peer-address; }
+										<td class="" _ $ASCheck _ ""> { expr ./peer-as _ " "; }
+										<td> { expr ./input-messages _ " "; }
+										<td> { expr ./output-messages _ " "; }
+										<td> { expr ./route-queue-count _ " "; }
+										<td> { expr ./flap-count _ " "; }
+										<td> { expr ./elapsed-time _ " "; }
+										<td> { expr ./peer-state _ " "; }
+									}
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorNTPAssociations">{ 
+								expr "NTP Associations";
+							}
+							
+							set $myRpc = { <command> "show ntp associations"; };
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							var $temp = jcs:break-lines( $results );
+							mvar $asterisk = false();
+							mvar $NTPRemoteName = "";
+							mvar $NTPCounter = -1;
+							<table class="xwide"> {
+								for-each ( $temp ) {
+									if ( contains( ., " " ) ) {
+										var $innerTemp = str:split( ., " " );
+										set $NTPCounter = $NTPCounter + 1;
+										<tr> {
+											for-each ( $innerTemp ) {
+												if ( position() == 1 ) {
+													set $NTPRemoteName = .;
+													if ( starts-with( ., "*" ) ) {
+														set $asterisk = true();
+													}
+												}
+												if ( . == "0" ) {
+													<p style="color: RED;"> "The line " _ $NTPRemoteName _ " contains a '0'.";
+													call addToErrorList ( $loc = "NTP Associations" );
+												}
+												<td> { expr .; }
+											}
+										}
+									}
+								}
+								if ( $asterisk == false() ) {
+									<p style="color: RED;"> "There is no line starting with an asterisk.";
+									call addToErrorList ( $loc = "NTP Associations" );
+								}
+								if ( $NTPCounter != 3 ) {
+									<p style="color: RED;"> "The amount of NTP associations is not 3.";
+									call addToErrorList ( $loc = "NTP Associations" );
+								}
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorClockSynchronization">{ 
+								expr "Clock Synchronization";
+							}
+							
+							set $myRpc = { <command> "show chassis synchronization clock-module routing-engine both"; };
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							for-each ( $results/multi-routing-engine-item ) {
+								<div> {
+									<table class="twoColumnTable wide"> {
+										<tr> {
+											<th> ./re-name;
+											if ( ./re-name == "re0" && ./clock-synchronization-clock-module/clock-module-current-role != "master" ) {
+												<td style="color: RED;"> "RE0 is not master.";
+												call addToErrorList ( $loc = "Clock Synchronization" );
+											}
+										}
+										<tr> {
+											<th class="lpadding5"> { expr "Clock Module Name"; }
+											<td> ./clock-synchronization-clock-module/clock-module-name;
+										}
+										<tr> {
+											<th class="lpadding5"> { expr "Current Role"; }
+											<td> ./clock-synchronization-clock-module/clock-module-current-role;
+										}
+										<tr> {
+											<th class="lpadding5"> { expr "Current State"; }
+											if ( ./clock-synchronization-clock-module/clock-module-current-state == "locked to external" ) {
+												<td> ./clock-synchronization-clock-module/clock-module-current-state;
+											} else {
+												<td style="color: RED;"> ./clock-synchronization-clock-module/clock-module-current-state;
+												call addToErrorList ( $loc = "Clock Synchronization" );
+											}
+										}
+										<tr> {
+											<th class="lpadding15"> { expr "State for"; }
+											if ( ./clock-synchronization-clock-module/clock-module-state-for-time != "0" ) {
+												<td> ./clock-synchronization-clock-module/clock-module-state-for-time;
+											} else {
+												<td style="color: RED;"> ./clock-synchronization-clock-module/clock-module-state-for-time;
+												call addToErrorList ( $loc = "Clock Synchronization" );
+											}
+										}
+										<tr> {
+											<th class="lpadding15"> { expr "State since"; }
+											<td> ./clock-synchronization-clock-module/clock-module-state-since-date;
+										}
+										<tr> {
+											<th class="lpadding5"> { expr "Monitored clock sources interface"; }
+											<td> ./clock-synchronization-clock-module/clock-module-monitor-source-interface;
+										}
+										if ( count( ./clock-synchronization-clock-module/clock-module-monitor-source-interface ) > 1 ) {
+											<p style="color: RED;"> "There is more than one monitored clock source on " _ ./re-name _ ". Only first one will be checked.";
+											call addToErrorList ( $loc = "Clock Synchronization" );
+										}
+										<tr> {
+											<th class="lpadding5"> { expr "Monitored clock sources type"; }
+											if ( ./clock-synchronization-clock-module/clock-module-monitor-source-type == "2048khz" ) {
+												<td> ./clock-synchronization-clock-module/clock-module-monitor-source-type;
+											} else {
+												<td style="color: RED;"> ./clock-synchronization-clock-module/clock-module-monitor-source-type;
+												call addToErrorList ( $loc = "Clock Synchronization" );
+											}
+										}
+										<tr> {
+											<th class="lpadding5"> { expr "Monitored clock sources status"; }
+											if ( ./clock-synchronization-clock-module/clock-module-monitor-source-status == "failed" ) {
+												<td style="color: RED;"> ./clock-synchronization-clock-module/clock-module-monitor-source-status;
+												call addToErrorList ( $loc = "Clock Synchronization" );
+											} else {
+												<td> ./clock-synchronization-clock-module/clock-module-monitor-source-status;
+											}
+										}
+									}
+								}
+							}
+							
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorAAAPPPTest">{ 
+								expr "AAA PPP Test";
+							}
+							
+							var $AAATest_LineID = "DEU.DTAG.BICOTEST01";
+							set $myRpc = <get-ppp-user-aaa-test-result> {
+								<user> "test";
+								<password> "test";
+								<agent-remote-id> $AAATest_LineID;
+							};
+							/* Execute the AAA test two times, as only the second one will be positive for newly discovered BNGs. */
+							set $results = jcs:execute( $connection, $myRpc );
+							<p style="font-size: 9px;"> "Running the AAA test two times. Only second one will be validated.";
+							/* Now start the real work. :) */
+							set $results = jcs:execute( $connection, $myRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							if( $results//self::xnm:error ) {
+								<p style="color: RED;"> {
+									for-each ( $results//self::xnm:error ) {
+										expr " Error: " _ .; <br>;
+									}
+								}
+							} else if ( $results/aaa-test-status == "Authentication Deny" ) {
+								<p style="color: RED;"> {
+									for-each ( $results/aaa-test-status ) {
+										expr " " _ .; <br>;
+									}
+									call addToErrorList ( $loc = "AAA PPP Test" );
+								}
+								if ( $results/aaa-test-status[2] == "Reason : timeout" ) {
+									<p style="color: RED;"> "PFS ist nicht erreichbar.";
+								}
+							} else if ( $results/aaa-test-status == "Authentication Grant" ) {
+								<p style="color: GREEN;"> "AAA test successful.";
+							}
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorLicenses">{ 
+								expr "Licenses";
+							}
+							
+							set $results = jcs:execute( $connection, "get-license-summary-information" );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							var $varCountLicenses = count( $results/license-information/license );
+							if ( $varCountLicenses != 4 ) {
+								<p style="color: RED;"> "There are not four licenses installed but " _ $varCountLicenses _ ".";
+								call addToErrorList ( $loc = "Licenses" );
+							}
+							
+							<table class="middle"> {
+								<tr> {
+									<th> "License name";
+									<th> "license state";
+								}
+								mvar $varLicenseNamesPlan = "E400185416 E400523272 E401014968 E401171420";
+								for-each ( $results/license-information/license ) {
+									<tr> {
+										var $varLicenseName = ./name;
+										/* If the license is in the license string, then good. Output and remove it from the string. */
+										if ( contains( $varLicenseNamesPlan, $varLicenseName ) ) {
+											<td style="color: GREEN;"> $varLicenseName;
+											set $varLicenseNamesPlan = str:replace( $varLicenseNamesPlan, $varLicenseName, "" );
+										} else {
+											<td class="majorError" title="Wrong license! Should not be installed."> $varLicenseName;
+											call addToErrorList ( $loc = "Licenses" );
+										}
+										<td> ./license-state;
+									}
+								}
+								if ( normalize-space( $varLicenseNamesPlan ) != "" ) {
+									<p style="color: RED;"> "Following licenses are not in the system: " _ $varLicenseNamesPlan _ ".";
+									call addToErrorList ( $loc = "Licenses" );
+								}
+							}
+							
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<div> {
+							<p class="bold" id="AnchoriCEAAAScripts">{ 
+								expr "iCEAAA Scripts";
+							}
+							
+							var $replaceFrom := {
+								<string> "-op ";
+								<string> "-event ";
+								<string> "-commit ";
+								<string> "\t";
+								<string> "\n";
+								<string> "\r";
+							}
+							mvar $prefix = " ";
+							var $opRpc = <command> "op iceaaa-show-version md5 true";
+							set $results = jcs:execute( $connection, $opRpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+							
+							var $wholeDeviceInformation := <device> {
+								for-each( $results/../output ) {
+									mvar $line = .;
+									if ( position() == 1 ) {
+										<wholeVersion> $line;
+									} else {
+										/*if ( not( starts-with( $line, "---" ) ) and not( matches( $line, "[ \t]*Type[ \t]*Script[ \t]*Version[ \t]*" ) ) ) {*/
+										if ( contains( $line, "---" ) ) {
+										} else if ( contains( $line, "Type" ) and contains( $line, "Script" ) and contains( $line, "Version" ) ) {
+										} else if ( contains( $line, "Compare md5 checksums with expected for version " ) ) {
+										} else {
+											/* Put a prefix in front of the lines, depending on which RE they are on. */
+											if ( contains( $line, "re0:" ) ) {
+												set $prefix = "re0 ";
+											} else if ( contains( $line, "re1:" ) ) {
+												set $prefix = "re1 ";
+											} else {
+												<oneScript> {
+													<re> $prefix;
+													var $inline = str:replace( $line, $replaceFrom/string, "" );
+													/*var $inline = $line;*/
+													var $splitted = str:split( $inline );
+													<type> $splitted[1];
+													<name> $splitted[2];
+													<version> $splitted[3];
+													<md5> $splitted[4];
+												}
+											}
+										}
+									}
+								}
+							}
+							
+							if ( $wholeDeviceInformation/device/oneScript ) {
+								<span> "Version of the check Script is '" _ $wholeDeviceInformation/device/wholeVersion _ "'.";
+								<table class="wide"> {
+									<tr> {
+										<th style="text-align: left;"> "Script name";
+										<th style="text-align: left;"> "RE";
+										<th style="text-align: left;"> "Type";
+										<th style="text-align: left;"> "Version";
+										<th style="text-align: left;"> "MD5";
+									}
+									for-each ( $wholeDeviceInformation/device/oneScript ) {
+										<xsl:sort select="name">;
+										<tr> {
+											<td> ./name _ " ";
+											<td> ./re _ " ";
+											<td> ./type _ " ";
+											<td> ./version _ " ";
+											if ( contains( ./md5, "ok" ) ) {
+												<td class="infoError alignCenter"> ./md5 _ " ";
+											} else {
+												<td class="majorError alignCenter"> ./md5 _ " ";
+												call addToErrorList ( $loc = "iCEAAA Scripts" );
+											}
+										}
+									}
+								}
+							} else {
+								<p style="color: RED;"> "No iCEAAA Scripts found on the device.";
+								call addToErrorList ( $loc = "iCEAAA Scripts" );
+							}
+							
+							copy-of bcersows:insertBackButton();
+						}
+						
+						<br>;
+						<hr class="magenta">;
+						
+						var $allAreas := {
+							<area> "Configuration Version";
+							<area> "Ping from BNG to LSR";
+							<area> "Lo0 Status";
+							<area> "Optics Diagnostics";
+							<area> "Pings";
+							<area> "Management DCN";
+							<area> "Chassis Environment";
+							<area> "Alarms";
+							<area> "Routing-Engines";
+							<area> "FPCs";
+							<area> "PICs";
+							<area> "Hardware Models";
+							<area> "Services";
+							<area> "IS-IS Adjacency";
+							<area> "LDP";
+							<area> "BGP Summary";
+							<area> "NTP Associations";
+							<area> "Clock Synchronization";
+							<area> "AAA PPP Test";
+							<area> "Licenses";
+							<area> "iCEAAA Scripts";
+						}
+						
+						<div> {
+							<p class="bold" id="AnchorOverviews">{ 
+								expr "Overviews";
+							}
+							
+							<table class="wide"> {
+								<tr> {
+									<th> { expr "Area"; }
+									<th> { expr "Error Status"; }
+								}
+								mvar $overviewErrorCounter = 0;
+								for-each ( $allAreas/area ) {
+									var $myArea = .;
+									<tr> {
+										<td> {
+											var $varAreaWOSpaces = "#Anchor" _ str:replace( $myArea, " ", "" );
+											<a href="" _ $varAreaWOSpaces  _ "" class="overviewLinks"> $myArea;
+										}
+										mvar $gotError = false();
+										for-each ( $errorReport/error ) {
+											if ( ./location == $myArea ) {
+												set $gotError = true();
+											}
+										}
+										if ( $gotError ) {
+											<td class="majorError"> "Error";
+											set $overviewErrorCounter = $overviewErrorCounter + 1;
+										} else {
+											<td class="infoError"> "OK";
+										}
+									}
+								}
+								<p style="margin: 0px;"> {
+									<span> "Errors: " _ $overviewErrorCounter _ " out of " _ count( $allAreas/area ) _ ".";
+									/* Display a little image indicating if the values are good or not. :) */
+									var $varImageName = {
+										if ( $overviewErrorCounter == 0 ) {
+											expr "green.png";
+										} else if ( $overviewErrorCounter > ( count( $allAreas/area ) div 2 ) ) {
+											expr "red.png";
+										} else {
+											expr "yellow.png";
+										}
+									}
+									<image src="./../mainui/images/" _ $varImageName _ "" style="vertical-align: top;" title="Status Indicator" alt=" ">;
+								}
+							}
+			
+							copy-of bcersows:insertBackButton();
+						}
+					}
+				}
+				<div class="wholeLine footer"> {
+					var $duration = date:seconds() - date:seconds( $localtime );
+					<span class="left italic unselectable"> "vs. 1.05b";
+					<span class="right"> { 
+						expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+					}
+				}
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}
+
+/* Template to add errors to the list. Checks if they already exist, if not, add them. */
+template addToErrorList ( $loc = "error" ) {
+	if ( !$errorReport/error[location==$loc] ) {
+		append $errorReport += <error> {
+			<location> $loc;
+		}
+	}
+}

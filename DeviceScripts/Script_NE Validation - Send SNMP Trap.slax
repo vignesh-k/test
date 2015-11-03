@@ -1,0 +1,119 @@
+/* 
+	Sends/Creates the SNMP trap 'jnxFruFailed' across multiple devices.			
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0
+	Date: 20.08.2014
+	Last Modified By: bcersows
+	###Script_NE Validation - Send SNMP Trap.slax;v1.0;2014.08.20
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns date = "http://exslt.org/dates-and-times";
+ns os extension = "http://xml.libslax.org/os";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "NE Validation - Send SNMP Trap" */
+/* @DESCRIPTION = "Sends/Creates the SNMP trap 'jnxFruFailed' across multiple devices." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+/* @PASSDEVICECREDENTIALS = "true" */
+/* @PROMOTEs="yes" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	
+	mvar $localtime = date:date-time();
+	
+	var $devices = bcersows:credentials();
+	var $myDevice = {
+		for-each ( $devices/device/host ) {
+			<xsl:sort>;
+			expr .;
+			if ( position() != last() ) {
+				expr ", ";
+			}
+		}
+	}
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				/*copy-of bcersows:insertCurrentTime();*/
+				
+				copy-of bcersows:insertCompletionTest();
+				
+				var $rpc =  <request-snmp-spoof-trap> {
+					<trap> "jnxFruFailed";
+				}
+
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Trap Creation Results"; }
+					}
+					
+					for-each ( $devices/device ) {
+						var $connection = jcs:open( (target) , (user) , (passwd) );
+						var $devicename = (host);
+						
+						<p class="bold"> "Device " _ $devicename _ ":";
+						
+						if ( $connection && !$connection//self::xnm:error ) {
+							var $results = jcs:execute( $connection , $rpc );
+							<p> "Request returned: ";
+							call checkErrors( $resultsNodeSet = $results, $msg = "Error:", $connection );
+							<span> $results/snmp-spoof-trap-result;
+						} else {
+							<div class="error"> "Could not open connection.";
+						}
+						expr jcs:close( $connection );
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+			}
+		}
+	}
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}

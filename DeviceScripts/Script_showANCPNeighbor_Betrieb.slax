@@ -1,0 +1,174 @@
+/*
+	Script to simulate the "show ancp neighbor" command.
+*/
+
+/* 
+	Author: bcersows
+	Version: 1.01
+	Date: 25.02.2014
+	Last Modified By: bcersows	
+	###Script_showANCPNeighbor_Betrieb.slax;v1.01;2014.02.25	
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns curl extension = "http://xml.libslax.org/curl";
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "Looking Glass ANCP Neighbor Information" */
+/* @DESCRIPTION = "Listet Informationen über ein Device auf." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			/*if ( jcs:regex( "/device\\[name=\".*\"\\]/configuration/access/radius-server\\[name=\".*\"\\]", $CONTEXT ) ) {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\]/configuration/access/radius-server\\[name=\"(.*)\"\\]", $CONTEXT )[2];
+			} else {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\].*", $CONTEXT )[2];
+			}*/
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				copy-of bcersows:insertCompletionTest();
+				
+				if ( $connection ) { } else {	
+					<div class="error"> {
+						expr "Konnte keine Verbindung aufbauen."; <br>;
+						expr "Abbruch folgt.";
+					}
+				}	
+				
+				/*<div id="floatingButton" onclick="toggleAll(this);"> { 
+					expr "Alle oeffnen.";
+				}*/
+				
+				copy-of bcersows:insertSoftwareInformation( $connection );
+				
+				var $rpc = <get-ancp-neighbor-information> {
+					<brief>;
+				}
+				set $results = jcs:execute( $connection, $rpc );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				/*<p class="bold hiddenButton" onclick="toggle(this, 2);"> {
+					expr "Hardware";
+					<span id="hiddenButton_2_span" class="hiddenButtonSpan"> { expr ">"; }
+				}
+				<div id="hiddenDiv_2" class="hidden" style="display: none;"> {*/
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "ANCP Neighbors"; }
+						copy-of bcersows:insertDownloadButton( "resultsTable", "ancpNeighbors" );
+					}
+					if ( $results/ancp-neighbor ) {
+						<table id="resultsTable" class="xwide clearBoth" border="1"> {
+							<tr> {
+								<th> { expr " "; }
+								<th> { expr "Version"; }
+								<th> { expr "IP Address"; }
+								<th> { expr "PartID"; }
+								<th> { expr "State"; }
+								<th> { expr "Time"; }
+								<th> { expr "Subscriber Count"; }
+								<th> { expr "Capabilities"; }
+							}
+							for-each ( $results/ancp-neighbor ) {
+								<tr> {
+									<td> { expr ./neighbor-stale-flag; }
+									<td> { expr ./protocol-version; }
+									<td> { expr ./ip-address; }
+									<td> { expr ./partition-identifier; }
+									<td> { expr ./state; }
+									<td> { expr ./up-time; }
+									<td style="text-align: center;"> { expr ./neighbor-subscriber-count; }
+									<td> { expr ./capabilities _ ""; }
+								}
+							}
+							/*expr $results;*/
+						}
+					} else {
+						<p> { expr "There are no neighbors at the moment."; }
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+				
+				/*set $configRpcs = <clear-aaa-statistics-table> { <accounting>; }
+				set $results = jcs:execute( $connection, $configRpcs );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );*/
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		<div class="error"> {
+			<span class="bold"> { expr $msg; } <br>;
+			for-each ( $resultsNodeSet//self::xnm:error ) {
+				expr .; <br>;
+			}
+		}
+	}
+}

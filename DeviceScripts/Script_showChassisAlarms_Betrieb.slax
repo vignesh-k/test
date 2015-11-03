@@ -1,0 +1,215 @@
+/* 
+	Script to simulate the "show chassis alarms" command.			
+*/
+
+/*
+	Author: bcersows
+	Version: 1.01
+	Date: 25.02.2014
+	Last Modified By: bcersows
+	###Script_showChassisAlarms_Betrieb.slax;v1.01;2014.02.25
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns curl extension = "http://xml.libslax.org/curl";
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "Looking Glass Chassis and System Alarms" */
+/* @DESCRIPTION = "Listet Informationen über ein Device auf." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+
+var $spaceAddress = "127.0.0.1";
+var $authorization = "Basic " _ slax:base64-encode("nbisu:SU2013!2su");
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			/*if ( jcs:regex( "/device\\[name=\".*\"\\]/configuration/access/radius-server\\[name=\".*\"\\]", $CONTEXT ) ) {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\]/configuration/access/radius-server\\[name=\"(.*)\"\\]", $CONTEXT )[2];
+			} else {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\].*", $CONTEXT )[2];
+			}*/
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				
+				if ( $connection ) { } else {	
+					<div class="error"> {
+						expr "Konnte keine Verbindung aufbauen."; <br>;
+						expr "Abbruch folgt.";
+					}
+				}	
+				
+				/*<div id="floatingButton" onclick="toggleAll(this);"> { 
+					expr "Alle oeffnen.";
+				}*/
+				
+				copy-of bcersows:insertSoftwareInformation( $connection );
+				
+				var $rpc = "get-alarm-information";
+				set $results = jcs:execute( $connection, $rpc );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Chassis Alarms"; }
+					}
+					<p> {
+						if ( $results/alarm-summary/no-active-alarms ) {
+							expr "No alarms currently active.";
+						} else if( $results/alarm-summary/active-alarm-count ) {
+							expr $results/alarm-summary/active-alarm-count _ " alarms currently active.";
+						}
+					}
+					if ( $results/alarm-detail ) {	/* TODO */
+						<table class="xwide" border="1"> {
+							<tr> {
+								<th> { expr "Alarm Time"; }
+								<th> { expr "Class"; }
+								<th> { expr "Description"; }
+								<th> { expr "Type"; }
+							}
+							for-each ( $results/alarm-detail ) {
+								var $alarmType = {
+									if ( ./alarm-class == "Minor" ) {
+										expr "minorError";
+									} else if ( ./alarm-class == "Major" ) {
+										expr "majorError";
+									} else {
+										expr " ";
+									}
+								}
+								<tr> {
+									<td> { expr ./alarm-time; }
+									<td class="" _ $alarmType _ ""> { expr ./alarm-class; }
+									<td title="" _ ./alarm-description _ ""> { expr ./alarm-short-description; }
+									<td> { expr ./alarm-type; }
+								}
+							}
+							/*expr $results;*/
+						}
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $rpcSystems = "get-system-alarm-information";
+				set $results = jcs:execute( $connection, $rpcSystems );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "System Alarms"; }
+					}
+					<p> {
+						if ( $results/alarm-summary/no-active-alarms ) {
+							expr "No alarms currently active.";
+						} else if( $results/alarm-summary/active-alarm-count ) {
+							expr $results/alarm-summary/active-alarm-count _ " alarms currently active.";
+						}
+					}
+					if ( $results/alarm-detail ) {	/* TODO */
+						<table class="xwide" border="1"> {
+							<tr> {
+								<th> { expr "Alarm Time"; }
+								<th> { expr "Class"; }
+								<th> { expr "Description"; }
+								<th> { expr "Type"; }
+							}
+							for-each ( $results/alarm-detail ) {
+								var $alarmType = {
+									if ( ./alarm-class == "Minor" ) {
+										expr "minorError";
+									} else if ( ./alarm-class == "Major" ) {
+										expr "majorError";
+									} else {
+										expr " ";
+									}
+								}
+								<tr> {
+									<td> { expr ./alarm-time; }
+									<td class="" _ $alarmType _ ""> { expr ./alarm-class; }
+									<td title="" _ ./alarm-description _ ""> { expr ./alarm-short-description; }
+									<td> { expr ./alarm-type; }
+								}
+							}
+							/*expr $results;*/
+						}
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+				
+				/*set $configRpcs = <clear-aaa-statistics-table> { <accounting>; }
+				set $results = jcs:execute( $connection, $configRpcs );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );*/
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}

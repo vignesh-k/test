@@ -1,0 +1,322 @@
+/* 
+	Script to get a list of all staged op Scripts on the BNG and their version strings.	Supports now Juniper and DT Scripts.
+*/
+
+/* 
+	Author: bcersows
+	Version: 1.03c
+	Date: 10.04.2014
+	Last Modified By: bcersows	
+	###Script_checkStagedScriptVersions.slax;v1.03b;2014.04.10
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns exsl extension = "http://exslt.org/common";
+ns date = "http://exslt.org/dates-and-times";
+ns str = "http://exslt.org/strings";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "NE Scripts - Check Versions" */
+/* @DESCRIPTION = "Listet alle Skripte und ihre Versionen auf, wenn möglich." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'},{'name':'showAllScripts','selectionvalues':'false,true'}]" */
+/* @PROMOTE="yes" */
+
+mvar $counter = 0; 
+mvar $lineCounter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+	<argument> {
+		<name> "showAllScripts";
+		<description> "If to show all Scripts. Else shows only those with a version tag.";
+	}
+}
+param $CONTEXT;
+param $showAllScripts;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $showAll = false();
+	if ( $showAllScripts == "true" ) {
+		set $showAll = true();
+	}
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			/*if ( jcs:regex( "/device\\[name=\".*\"\\]/configuration/access/radius-server\\[name=\".*\"\\]", $CONTEXT ) ) {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\]/configuration/access/radius-server\\[name=\"(.*)\"\\]", $CONTEXT )[2];
+			} else {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\].*", $CONTEXT )[2];
+			}*/
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {				
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				copy-of bcersows:insertCompletionTest();
+				
+				if ( $connection ) { } else {	
+					<div class="error"> {
+						expr "Konnte keine Verbindung aufbauen."; <br>;
+						expr "Abbruch folgt.";
+					}
+				}	
+				
+				copy-of bcersows:insertSoftwareInformation( $connection );
+				
+				mvar $path = "";
+				mvar $filesRpc;
+				/* The folder paths to search in. */
+				var $paths := {
+					<element> {
+						<path> "/var/db/scripts/op";
+						<type> "OP";
+					}
+					<element> {
+						<path> "/var/db/scripts/event";
+						<type> "Event";
+					}
+					<element> {
+						<path> "/var/db/scripts/commit";
+						<type> "Commit";
+					}
+				}
+				
+				/* BNG query in table! */
+
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Script Versions"; }
+						copy-of bcersows:insertDownloadButton( "resultsTable", "scriptVersions" );
+					}
+					<p> {
+						/*expr "Directory name: \"";
+						/<span class="italic"> { expr $filesResult/directory/directory-name; } /
+						<span class="italic"> { expr $path; } 
+						expr "\".";*/
+					}
+					<p class="italic"> {
+						if ( $showAll ) {
+							expr "Showing all Scripts.";
+						} else {
+							expr "Only showing Scripts that have a version tag.";
+						}
+					}
+					<p> {
+						expr "Because of the different headers of JNPR and DT Scripts, the output and format differs."; <br>;
+						expr "The column '"; <span class="italic"> "Name in tag / author"; expr "' contains either the Script name that is saved in the header ("; 
+							<span class="magenta tooltip" title="Deutsche Telekom AG"> { <span title=""> "DT"; } 
+							expr ") or the author of the Script ("; 
+							<span class="juniper tooltip" title="Juniper Networks, Inc."> { <span title=""> "JNPR"; } 
+							expr ").";
+					}
+					<table id="resultsTable" class="xwide"> {
+						<tr> {
+							/*<th rowspan="2"> { expr "Script Name"; }*/
+							<th> { expr "Script Name"; }
+							<th colspan="3"> { expr "Version tag (if available)"; }
+						}
+						<tr> {
+							<th> " ";
+							<th style="text-align: left;" style="max-width: 5%;" title="Where the creator of the Script is from, DT or Juniper."> "Comp";
+							<th style="text-align: left;" title="Type of Script."> "Type";
+							<th style="text-align: left;" style="max-width: 20%;" title="Either shows the Script name that is in the tag or the author's name."> "Name in tag / author";
+							<th style="text-align: left;" title="Which version the Script is, according to the header."> "Version";
+							<th style="text-align: left;" title="Date of the last change, according to the header."> "Date";
+						}
+						
+						mvar $allCounter = 0; mvar $withCounter = 0;
+						mvar $scriptType = "OP";
+						
+						for-each ( $paths/element ) {
+							set $scriptType = ./type;
+							set $path = ./path;
+							set $filesRpc = <file-list> {
+								<path> $path;
+							}
+							var $filesResult = jcs:execute( $connection, $filesRpc );
+							call checkErrors( $resultsNodeSet = $filesResult, $connection, $msg = "Fehler." );
+							
+							for-each ( $filesResult/directory/file-information[ not( file-symlink-target ) ] ) {
+								<xsl:sort select="./file-name">;
+								if ( contains( ./file-name, ".slax" ) ) {
+									set $allCounter = $allCounter + 1;
+									<tr> {
+										if ( $showAll ) {
+											<td> { expr ./file-name; }
+											<td title="Path of Scripts: " _ $path _ "."> $scriptType;
+										}
+										
+										var $myFileRPC = <file-show> {
+											<filename> $path _ "/" _ ./file-name;
+										}
+										var $myFileResult = jcs:execute( $connection, $myFileRPC );
+										if( $myFileResult//self::xnm:error ) { } else {
+											var $temp = jcs:break-lines( $myFileResult );
+											mvar $run = true();
+											set $lineCounter = 0;
+											var $fileName = ./file-name;
+											for-each ( $temp ) {
+												if ( $run ) {
+													if ( $lineCounter > 30 ) {	/* only check first 30 lines for header. */
+														set $run = false();
+													}
+													set $lineCounter = $lineCounter + 1;
+													if ( contains( ., "\t###" ) ) {	/* DT Scripts */
+														if ( $showAll == false() ) {
+															<td> { expr $fileName; }
+															<td title="Path of Scripts: '" _ $path _ "'."> $scriptType;
+														}
+														<td style="max-width: 5%; cursor: help;" class="magenta tooltip" title="Deutsche Telekom AG"> {
+															<span title=""> "DT";
+														}
+														var $splitted = str:split( translate( ., "\t###", "" ), ";" );
+														if ( $fileName != $splitted[1] ) {
+															<td style="color: RED;" title="Name in tag not equal file name. Please check."> $splitted[1];
+														} else {
+															<td> $splitted[1];
+														}
+														<td> $splitted[2];
+														<td> $splitted[3];
+														
+														/* Gather some additional information out of DT Scripts. */
+														var $additionalInformation = <div> {
+															if ( ($lineCounter - 4) > 0 ) {
+																mvar $gotSomething = false();
+																if ( contains( $temp[ $lineCounter - 4 ], "Author:" ) ) {
+																	<span> "Author: " _ jcs:regex( "[ \t]+Author\: (.+)", $temp[ $lineCounter - 4 ] )[2];
+																	<br>;
+																	set $gotSomething = true();
+																}
+																if ( contains( $temp[ $lineCounter - 1 ], "Last Modified By:" ) ) {
+																	<span> "Last Modified By: " _ jcs:regex( "[ \t]+Last Modified By\: (.+)", $temp[ $lineCounter - 1 ] )[2];
+																	<br>;
+																	set $gotSomething = true();
+																}
+																if ( $gotSomething ) {
+																	<hr>;
+																	<span> "Information only available for DT Scripts, and only for those with an additional GIT header.";
+																}
+															}
+														}
+														if ( $additionalInformation != "" ) {
+															/*<td style="width: 10px; cursor: help;" class="magenta" title=$additionalInformation> ">";*/
+															<td class="magenta tooltipHTML" style="width: 10px; cursor: help;" onmouseover="showPopup( this, true ); return false;" onmouseleave="showPopup( this, false ); return false;"> {
+																<span title=""> ">";
+																<div class="tooltipHTMLContent"> {
+																	copy-of $additionalInformation;
+																}																
+															}
+														}
+														set $run = false();
+														set $withCounter = $withCounter + 1;
+													} else if ( contains( ., " * Build" ) || contains( ., " * Version" ) ) {	/* Juniper Scripts */
+														var $build = {
+															expr jcs:regex( " \* (Version|Build)[ \t]+\: (.+)", . )[3];
+														}
+														if ( $showAll == false() ) {
+															<td> { expr $fileName; }
+															<td title="Path of Scripts: " _ $path _ "."> $scriptType;
+														}
+														<td style="max-width: 5%; cursor: help;" class="juniper tooltip" title="Juniper Networks, Inc."> { 
+															<span title=""> "JNPR"; 
+														}
+														<td style="max-width: 20%;"> {
+															if ( contains( $temp[ $lineCounter - 1 ], " * Author" ) ) {
+																expr "" _ jcs:regex( " \* Author[ \t]+\: (.+)", $temp[ $lineCounter - 1 ] )[2];
+															} else {
+																expr "" _ jcs:regex( " \* Author[ \t]+\: (.+)", $temp[ $lineCounter - 3 ] )[2];
+															}
+														}
+														
+														<td> $build;
+														<td> {	/* Get the Date tag, only show date. */
+															expr str:replace( jcs:regex( ".*Date: ([0-9\-]+).*", $temp[ $lineCounter + 6 ] )[2], "-", "." );
+														}
+														set $run = false();
+														set $withCounter = $withCounter + 1;
+													} 
+												}
+											}
+										}
+										/*<td> { expr "hu"; }*/
+									}
+								}
+							}
+						}
+						/*expr $results;*/
+						expr "Number of Scripts with version tag (all Scripts): " _ $withCounter _ " (" _ $allCounter _ ")."; 
+					}
+					
+					if ( $showAll==false() ) {
+						<script> {
+							expr "var table = document.getElementById('resultsTable');";
+							expr "for ( var i = table.rows.length - 1; i != 1; i-- ) {";
+							expr "	var row = table.rows[i];";
+							expr "	if ( row.cells.length == 0 ) {";
+							expr "		table.deleteRow(i);";
+							expr "	}";
+							expr "}";
+						}
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					<span class="left italic unselectable"> "vs. 1.03c+";
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}

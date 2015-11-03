@@ -1,0 +1,285 @@
+/*
+ * Filename      : NE_RE-View_Status-local.slax
+ * Author        : Andrew Sharp asharp@juniper.net
+ * Platform      : Junos Space
+ * Release       : 13.1P2
+ * Version       : 1.0
+ * SVN INFO      :
+ *
+ * $Rev: 36133 $
+ * $Date: 2014-04-24 14:14:09 +0100 (Thu, 24 Apr 2014) $
+ * $Author: asharp $
+ * 
+ * Description   : Show routing engine status
+ *
+ */
+
+version 1.0;
+
+/* Namespace declarations */
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns jspace = "http://jspace-utils/asharp@juniper.net";
+ns exsl extension = "http://exslt.org/common";
+
+/* Imports */
+import "../import/junos.xsl";
+import "lc-jspace-lib.slax";
+
+/* Junos Space specific context, name and description */
+/* @CONTEXT = "/device|/device/chassis-inventory/chassis|/device/chassis-inventory/chassis/chassis-module[starts-with(name,"Routing Engine")]" */
+/* @NAME = "Show RE status" */
+/* @DESCRIPTION = "Show routing engine status" */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+
+/* Global variables */
+var $scriptname = "NE_RE-View_Status-local.slax";
+var $get-route-engine-information-rpc;
+var $results;
+var $local = jcs:open();
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "The context associated with this script.";
+	}
+}
+param $CONTEXT;
+
+match / {
+	<op-script-results> {
+		/* abort if no connection to local mgd */
+		if ($local/..//xnm:error) {
+			call rpc_failure($rpc = $local/.., $message = "Error connecting on mgd on this RE");
+			<xsl:message terminate="yes"> ;
+		}
+
+		/* Request status for a single RE */
+		var  $get-route-engine-information-rpc = <get-route-engine-information> {
+			if ( not(jcs:empty(jspace:parse-context-chassis("/device.*/chassis-inventory/chassis.*/chassis-module\\[name=\".* ([0-9]+)\"\\]",$CONTEXT))) ) {
+				<slot> jspace:parse-context-chassis("/device.*/chassis-inventory/chassis.*/chassis-module\\[name=\".* ([0-9]+)\"\\]",$CONTEXT);
+			}
+		}
+
+		var $results = jcs:execute( $local , $get-route-engine-information-rpc );
+		if ($results/..//xnm:error) {
+			call rpc_failure($rpc = $results/.., $message = "Error collecting route engine information.");
+			<xsl:message terminate="yes"> ;
+		}
+
+		<output> {
+			<HTML> {
+				<HEAD> {
+					<title> "Routing Engine status";
+					copy-of jspace:html-style("7");
+				}
+				<BODY> {
+					for-each ( $results/route-engine ) {
+						<table border="1"> {
+							<tr> {
+								<td colspan="4" id="tableheader"> {
+									if (slot) {
+										expr "Routing Engine Slot: " _ (slot);
+									}
+									else {
+										expr "Routing Engine: ";
+									}
+								}
+							}
+							if (mastership-state) {
+								<tr> {
+									<td id="celltitle"> {
+										expr "Current state";
+									}
+									<td colspan="3"> {
+										expr jcs:printf( "%jcs" , (mastership-state) );
+									}
+								}
+							}
+							if (mastership-priority) {
+								<tr> {
+									<td id="celltitle"> {
+										expr "Election priority";
+									}
+									<td colspan="3"> {
+										expr jcs:printf( "%jcs" , (mastership-priority) );
+									}
+								}
+							}
+							<tr> {
+								<td id="celltitle"> {
+									expr "Status";
+								}
+								<td colspan="3"> {
+									expr (status);
+								}
+							}
+							<tr> {
+								<td id="celltitle"> {
+									expr "Temperature";
+								}
+								<td colspan="3"> {
+									expr (temperature);
+								}
+							}
+							<tr> {
+								<td id="celltitle"> {
+									expr "CPU temperature";
+								}
+								<td colspan="3"> {
+									expr (cpu-temperature);
+								}
+							}
+							<tr> {
+								<td id="celltitle"> {
+									expr "DRAM";
+								}
+								<td colspan="3"> {
+									expr (memory-dram-size) _ " MB";
+								}
+							}
+							<tr> {
+								<td id="celltitle"> {
+									expr "Memory utilization";
+								}
+								<td colspan="3"> {
+									expr (memory-buffer-utilization) _ " percent";
+								}
+							}
+							<tr> {
+								<td colspan="4" id="celltitle"> {
+									expr "CPU utilization:";
+								}
+							}
+							<tr> {
+								<td id="celltitleright"> {
+									expr "User";
+								}
+								<td colspan="3"> {
+									expr (cpu-user) _ " percent";
+								}
+							}
+							<tr> {
+								<td id="celltitleright"> {
+									expr "Background";
+								}
+								<td colspan="3"> {
+									expr (cpu-background) _ " percent";
+								}
+							}
+							<tr> {
+								<td id="celltitleright"> {
+									expr "Kernel";
+								}
+								<td colspan="3"> {
+									expr (cpu-system) _ " percent";
+								}
+							}
+							<tr> {
+								<td id="celltitleright"> {
+									expr "Interrupt";
+								}
+								<td colspan="3"> {
+									expr (cpu-interrupt) _ " percent";
+								}
+							}
+							<tr> {
+								<td id="celltitleright"> {
+									expr "Idle";
+								}
+								<td colspan="3"> {
+									expr (cpu-idle) _ " percent";
+								}
+							}
+							<tr> {
+								<td id="celltitle"> {
+									expr "Model";
+								}
+								<td colspan="3"> {
+									expr (model);
+								}
+							}
+							<tr> {
+								<td id="celltitle"> {
+									expr "Serial ID";
+								}
+								<td colspan="3"> {
+									expr (serial-number);
+								}
+							}
+							<tr> {
+								<td id="celltitle"> {
+									expr "Start time";
+								}
+								<td colspan="3"> {
+									expr (start-time);
+								}
+							}
+							<tr> {
+								<td id="celltitle"> {
+									expr "Uptime";
+								}
+								<td colspan="3"> {
+									expr (up-time);
+								}
+							}
+							<tr> {
+								<td id="celltitle"> {
+									expr "Last reboot reason";
+								}
+								<td colspan="3"> {
+									expr (last-reboot-reason);
+								}
+							}
+							if (mastership-state != "backup") {
+								<tr> {
+									<td id="celltitle"> {
+										expr "Load averages:";
+									}
+									<td id="celltitle"> {
+										expr "1 minute";
+									}
+									<td id="celltitle"> {
+										expr "5 minute";
+									}
+									<td id="celltitle"> {
+										expr "15 minute";
+									}
+								}
+								<tr> {
+									<td> {
+									}
+									<td> {
+										expr (load-average-one);
+									}
+									<td> {
+										expr (load-average-five);
+									}
+									<td> {
+										expr (load-average-fifteen);
+									}
+								}
+							}
+						} /* table */
+						<p>;
+					} /* for-each */
+				} /* body */
+			} /* html */
+		}
+		expr jcs:syslog("daemon.info", "SCRIPT_ACTION_RE_STATUS: Script action taken to show status of the Routing Engine (RE).");
+		var $close-results = jcs:close( $local );
+		if ($close-results/..//xnm:error) {
+			call rpc_failure($rpc = $close-results/.., $message = "Error closing connection.");
+			<xsl:message terminate="yes"> ;
+		}
+	}
+}
+
+template rpc_failure($rpc, $message = "Following errors occurred while trying to gather data: ") {
+  expr jcs:syslog("daemon.error", $message);
+  for-each ($rpc//xnm:error) {
+    expr jcs:syslog("daemon.error", message);
+  }
+}

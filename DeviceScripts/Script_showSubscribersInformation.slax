@@ -1,0 +1,185 @@
+/* 
+	Script to simulate the "show subscribers port" command.			
+*/
+
+/* 
+	Author: bcersows
+	Version: 1.0
+	Date: 30.04.2014
+	Last Modified By: bcersows	
+	###Script_showSubscribersInformation.slax;v1.0;2014.04.30
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "Looking Glass Subscribers Information" */
+/* @DESCRIPTION = "Offers information about subscribers." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				copy-of bcersows:insertCompletionTest();
+				
+				if ( $connection ) { } else {	
+					<div class="error"> {
+						expr "Konnte keine Verbindung aufbauen."; <br>;
+						expr "Abbruch folgt.";
+					}
+				}	
+
+				copy-of bcersows:insertSoftwareInformation( $connection );
+								
+				var $summaryRpc = "get-subscribers-summary";
+				set $results = jcs:execute( $connection, $summaryRpc );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler Summary." );
+				
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Subscribers Summary"; }
+						copy-of bcersows:insertDownloadButton( "resultsTable", "subscribersSummary" );
+					}
+					<table id="resultsTable" class="middle" style="padding-left: 13%;"> {
+						<tr> {
+							<th style="width: 40; text-align: left;"> { expr "Subscribers by State"; }
+							<td style="width: 50;"> { expr " "; }
+						}
+						<tr> {
+							<td style="text-align: center;"> { expr " Active:"; }
+							<td style="text-align: center;"> { expr $results/counters[@junos:style="state-summary"]/session-state-active; }
+						}
+						<tr> {
+							<td style="text-align: center;"> { expr " Total:"; }
+							<td style="text-align: center;"> { expr $results/counters[@junos:style="state-summary"]/session-state-total; }
+						}
+						<tr> {
+							<th style="width: 40; text-align: left;"> { expr "Subscribers by Client Type"; }
+							<td style="width: 50;"> { expr " "; }
+						}
+						<tr> {
+							<td style="text-align: center;"> { expr " VLAN:"; }
+							<td style="text-align: center;"> { expr $results/counters[@junos:style="type-summary"]/session-type-vlan; }
+						}
+						<tr> {
+							<td style="text-align: center;"> { expr " PPPoE:"; }
+							<td style="text-align: center;"> { expr $results/counters[@junos:style="type-summary"]/session-type-pppoe; }
+						}
+						<tr> {
+							<td style="text-align: center;"> { expr " ESSM:"; }
+							<td style="text-align: center;"> { expr $results/counters[@junos:style="type-summary"]/session-type-essm; }
+						}
+						<tr> {
+							<td style="text-align: center;"> { expr " Total:"; }
+							<td style="text-align: center;"> { expr $results/counters[@junos:style="type-summary"]/session-type-total; }
+						}
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $rpc = <get-subscribers-summary> { <port>; };
+				set $results = jcs:execute( $connection, $rpc );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler Port." );
+				
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Subscribers Port Summary"; }
+						copy-of bcersows:insertDownloadButton( "portResultsTable", "subscribersPortSummary" );
+						if ( !$results/counters[@junos:style="port-summary"]/port-name ) {
+							copy-of bcersows:disableDownloadButton();
+						}
+					}
+					<p class=""> {
+						expr "Total Subscribers: " _ $results/counters[@junos:style="port-summary-total"]/port-total _ ".";
+					}
+					if ( $results/counters[@junos:style="port-summary"]/port-name ) {
+						<table id="portResultsTable" class="middle clearBoth"> {
+							<tr> {
+								<th style="width: 50%;"> { expr "Interface"; }
+								<th style="width: 50%;"> { expr "Count"; }
+							}
+							for-each ( $results/counters[@junos:style="port-summary"]/port-name ) { 
+								var $pos = position();
+								<tr> {
+									<td> { expr .; }
+									<td> { expr $results/counters[@junos:style="port-summary"]/port-count[ $pos ]; }
+								}
+							}
+						}
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					expr "Dauer der Ausfuehrung: " _ $duration _ "s. ";
+				}
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}

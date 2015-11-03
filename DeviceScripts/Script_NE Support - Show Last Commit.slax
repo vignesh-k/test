@@ -1,0 +1,158 @@
+/* 
+	Gets the last commits from a BNG and compares what was changed to the current configuration. Checks only the commit that changed the SNMP location (=Initial Setup).
+*/
+/* 
+	Author: bcersows
+	Version: 1.0
+	Date: 21.10.2014
+	Last Modified By: bcersows	
+	###Script_NE Support - Show Last Commit.slax;v1.0;2014.10.21
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device[matches(name, '\w{3}J\d{2,3}') or matches(name, '^(bng|BNG).*$')]" */
+/* @NAME = "NE Support - Show Last Commit" */
+/* @DESCRIPTION = "Gets the last commits from a BNG and compares what was changed to the current configuration. Checks only the commit that changed the SNMP location (=Initial Setup)." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+/* @PROMOTEs="yes" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				copy-of bcersows:insertCompletionTest();
+				
+				if ( $connection ) { } else {	
+					<div class="error"> {
+						expr "Konnte keine Verbindung aufbauen."; <br>;
+						expr "Abbruch folgt.";
+					}
+				}	
+				
+				copy-of bcersows:insertSoftwareInformation( $connection );
+				
+				mvar $commitCounter = 0;
+				var $maxRequests = 20;
+				mvar $stopped = false();
+				set $results = "";
+				
+				while ( not( contains( $results, "location \"" ) ) ) {
+					set $commitCounter = $commitCounter + 1;
+					var $commitRpc = <get-rollback-information> {
+						<rollback> 0;
+						<compare> $commitCounter;
+					}
+					set $results = jcs:execute( $connection, $commitRpc );
+					if ( $results//self::xnm:error ) {
+						<p style="background-color: RED;"> "Error: " _ $results//self::xnm:error;
+					}
+					if ( $commitCounter > $maxRequests ) {
+						set $results = "SNMP location \" not found in the last " _ $maxRequests _ " commits. Are you sure you are on the right device?";
+						set $stopped = true();
+					}
+				}
+				<div> {
+					<p class="bold">{
+						expr "Commit";
+					}
+					
+					/*call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );*/
+					
+					<div> {
+						<p> {
+							expr "The changes since commit number " _ $commitCounter _ " are:";
+							<a class="button" onclick="var elem = document.getElementById('codeOutput'); markieren(elem); return false;" style="float: right;"> "Select the output text.";
+						}
+						<pre id="codeOutput"> {
+							if ( $stopped ) {
+								<span class="majorError"> $results;
+							} else {
+								var $lineResults = str:split( $results/configuration-information/configuration-output, "\n" );
+								for-each ( $lineResults ) {
+									var $colorName = {
+										if ( starts-with( ., "-" ) ) {
+											expr "RED";
+										} else if ( starts-with( ., "+" ) ) {
+											expr "GREEN";
+										} else if ( starts-with( ., "[" ) ) {
+											expr "BLUE";
+										}
+									}
+									<span style="color: " _ $colorName _ ";"> .;
+									expr "\n";
+								}
+							}
+						}
+					}
+					copy-of bcersows:insertBackButton();
+				}
+
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					<span class="left italic unselectable"> "vs. 1.0";
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	} 
+}

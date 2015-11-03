@@ -1,0 +1,150 @@
+/*
+ * Filename      : PPPoE-Show_Sessions_Count.slax
+ * Author        : Christian Giese cgiese@juniper.net, Florian Hartung fhartung@juniper.net
+ * Platform      : MX TRIO
+ * Release       : Junos 12.2+
+ * Version       : 1.0
+ * SVN INFO      :
+ *
+ * $Rev: 36133 $
+ * $Date: 2014-04-24 14:14:09 +0100 (Thu, 24 Apr 2014) $
+ * 
+ * Description   : Show number of PPPoE/L2TP sessions per interface and chassis
+ *
+ */
+ 
+ /* Junos Space specific context, name and description */
+ /* @CONTEXT = "/device" */
+ /* @NAME = "PPPoE/L2TP count" */
+ /* @DESCRIPTION = "Show number of PPPoE/L2TP sessions per interface and chassis" */
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns jspace = "http://jspace-utils/asharp@juniper.net";
+
+import "../import/junos.xsl";
+import "jspace-lib.slax";
+
+var $arguments = {
+    <argument> {
+        <name> "display";
+        <description> "all|used";
+    } 
+}
+param $display = "all";
+
+match / {
+    <op-script-results> {
+    	        	  	
+    	/* open connection */
+    	var $connection = jcs:open();
+                                
+        mvar $sumPPPoE = 0;
+        mvar $sumL2TP = 0;
+		
+		var $tty = $junos-context/tty;
+
+        var $get-interface-information = <get-interface-information> {
+        	<terse>;
+        }
+        var $interface-information = jcs:execute( $connection, $get-interface-information );
+        
+		<output> {
+			<HTML> {
+				<HEAD> {
+					<title> "Number of PPPoE/L2TP sessions";
+                    copy-of jspace:html-style("7");
+                }
+                    <BODY> {
+							<table border="1">;
+								<tr> {
+									<td id="celltitle"> {
+										expr "Interface";
+									}
+									<td id="celltitle"> {
+										expr "Sessions";
+									}
+									<td id="celltitle"> {
+										expr "PPPoE";
+									}
+									<td id="celltitle"> {
+										expr "L2TP";
+									}
+								}
+		
+        for-each( $interface-information//physical-interface ) {
+        	        	
+        	if ( starts-with(name, "ge") || starts-with( name, "xe" ) ) {
+        		        	
+                var $get-subscribers-int = <get-subscribers> {
+            	    <physical-interface> name;
+                    <client-type> "pppoe";
+                    <detail>;
+                }
+                var $subscriber-information-int = jcs:execute( $connection, $get-subscribers-int );                
+                
+                var $sumIntPPPoE = count( $subscriber-information-int/subscriber[ access-type == "PPPoE" ] );
+                var $sumIntL2TP = count( $subscriber-information-int/subscriber[ contains( State, "Tunneled" ) ] );
+                
+                if ( $sumIntPPPoE > 0 || $display == "all" ) {
+                	
+                    set $sumPPPoE = $sumPPPoE + $sumIntPPPoE;
+                    set $sumL2TP = $sumL2TP + $sumIntL2TP;
+                    
+					if ( $tty != "non-tty") {
+						expr jcs:output( jcs:printf( "Interface: %-15s Sessions: %5s PPPoE: %5s L2TP: %5s", name, $sumIntPPPoE, $sumIntPPPoE - $sumIntL2TP, $sumIntL2TP ) ); 
+					}
+					else {
+						<tr> {
+							<td> {
+								expr (name);
+							}
+							<td> {
+								expr ($sumIntPPPoE);
+							}
+							<td> {
+								expr ($sumIntPPPoE - $sumIntL2TP);
+							}
+							<td> {
+								expr ($sumIntL2TP);
+							}
+						}
+					}
+				}
+            }
+        }
+        
+		if ( $tty != "non-tty") {
+			expr jcs:output( jcs:printf( "Chassis: %17s Sessions: %5s PPPoE: %5s L2TP: %5s\r", " ", $sumPPPoE, $sumPPPoE - $sumL2TP, $sumL2TP ) );
+        }
+		else {
+			<tr style="height: 20px !important;"> {
+				<td> { expr ( "" ); }
+			}
+			<tr> {
+				<td id="celltitle"> {
+					expr ("Chassis");
+				}
+				<td> {
+					expr ($sumPPPoE);
+				}
+				<td> {
+					expr ($sumPPPoE - $sumL2TP);
+				}
+				<td> {
+					expr ($sumL2TP);
+				}
+			}
+		}
+		
+        /* close connection */
+        var $closeResult = jcs:close ( $connection );
+    }
+	
+	} /* body */
+	} /* head */
+	} /* html */
+}

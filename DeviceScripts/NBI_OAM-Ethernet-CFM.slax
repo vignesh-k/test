@@ -1,0 +1,69 @@
+/*
+ * Filename      : NBI_OAM-Ethernet-CFM.slax
+ * Author        : Andrew Sharp asharp@juniper.net
+ * Platform      : Junos Space
+ * Release       : 14.1R1
+ * Version       : 2.0
+ * SVN INFO      :
+ *
+ * $Rev: 34122 $
+ * $Date: 2013-10-25 15:08:28 +0100 (Fri, 25 Oct 2013) $
+ * $Author: asharp $
+ * 
+ * Description   : NBI Show OAM Ethernet CFM Interfaces script
+ *
+ */
+
+version 1.0;
+
+/* Namespace declarations */
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device[name='NBI only']" */
+/* @NAME = "NBI OAM Ethernet CFM" */
+/* @DESCRIPTION = "NBI OAM Ethernet CFM script" */
+/* @ISLOCAL = "true" */
+
+var $arguments = {
+	<argument> {
+		<name> "INTERFACE";
+		<description> "Interface name";
+	}
+}
+param $INTERFACE;
+
+match / {
+	<op-script-results> {
+		var  $get-rpc = <get-cfm-interfaces-information> {
+			<interface-name> $INTERFACE;
+			<detail>;
+		}
+		var $connection = jcs:open();
+		var $results = jcs:execute( $connection , $get-rpc );
+		var $close-results = jcs:close( $connection );
+		/* Known Errors */
+		if ( $results//self::xnm:error ) {
+			for-each ( $results//self::xnm:error ) {
+				<errors> message;
+			}
+		}
+		else if ( $results/cfm-entry ) {
+			copy-of $results;
+		}
+
+		else if ( jcs:empty($results/cfm-entry) ) {
+			<no-cfm> "No CFM entries.";
+		}
+
+		else {
+			<unknown-error> "Unknown error found.";
+			copy-of $results;
+		}
+		expr jcs:syslog("daemon.info", "SCRIPT_NBI_OAM_ETHERNET_CFM_INFO: Script action taken to fetch OAM Ethernet CFM information.");
+	}
+}
+

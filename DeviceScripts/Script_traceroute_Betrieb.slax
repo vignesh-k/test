@@ -1,0 +1,236 @@
+/* 
+	Script to simulate the "ping" CLI command.
+*/
+
+/*
+	Author: bcersows
+	Version: 1.01
+	Date: 30.04.2014
+	Last Modified By: bcersows
+	###Script_traceroute_Betrieb.slax;v1.01;2014.04.30
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "Looking Glass Traceroute" */
+/* @DESCRIPTION = "Performs a traceroute to a host." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'},{'name':'Host','defaultvalue':'10.201.100.100'},{'name':'mode','selectionvalues':',inet,inet6'},{'name':'routingInstance','parameterscope':'devicespecific','selectionvaluesxpath':'fn:insert-before(/device/configuration/routing-instances/instance/name/text(), 0, "None Specified")'}]" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+	<argument> {
+		<name> "Host";
+		<description> "Host, zu dem abgefragt werden soll.";
+	}
+	<argument> {
+		<name> "mode";
+		<description> "Mode to force. [ ,inet,inet6]";
+	}
+	<argument> {
+		<name> "routingInstance";
+		<description> "The Routing Instance to ping from. Configured RIs are in the list. Optional.";
+	}
+}
+param $CONTEXT;
+param $Host;
+param $routingInstance;
+param $mode;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				copy-of bcersows:insertCompletionTest();
+				
+				if ( $connection ) { } else {	
+					<div class="error"> {
+						expr "Konnte keine Verbindung aufbauen."; <br>;
+						expr "Abbruch folgt.";
+					}
+				}	
+				
+				copy-of bcersows:insertSoftwareInformation( $connection );
+				
+				var $myRI = substring-before( substring-after( $routingInstance, $myDevice _ "\":\"" ), "\"" );
+				expr $myRI _ "\n";
+				var $rpc = <traceroute> {
+					<host> $Host;
+					if ( $mode == "inet" ) {
+					<inet>;
+					} else if ( $mode == "inet6" ) {
+					<inet6>;
+					}
+					if ( $myRI != "None Specified" ) {
+					<routing-instance> $myRI;
+					}
+					<wait> "5";
+				}
+				set $results = jcs:execute( $connection, $rpc );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Traceroute Stack"; }
+					}
+					
+					<table class="twoColumnTable small"> {
+						<tr> {
+							<th> { expr "Host name: "; }
+							<td> { expr $results/target-host; }
+						}
+						<tr> {
+							<th> { expr "IP:"; }
+							<td> { expr $results/target-ip; }
+						}
+						<tr> {
+							<th> { expr "Success:"; }
+							if ( $results/traceroute-success ) { 
+								<td class="infoError"> { expr "Ja"; } 
+							} else { 
+								<td class="majorError capitalize"> { 
+									expr "Nein. ";
+									if ( $results/traceroute-failure ) {
+										uexpr "Error: <span class='italic'>" _ $results/traceroute-failure _ "</span>";
+									}
+								}  
+							} 
+						}
+						<tr> {
+							<th> { expr "Max Hop Index:"; }
+							<td> { expr $results/max-hop-index; }
+						}
+						<tr> {
+							<th> { expr "Packet Size:"; }
+							<td> { expr $results/packet-size; }
+						}
+					}				
+					if ( $results/hop ) {
+						<table id="resultsTable" class="wide"> {
+							<tr> {
+								<th class="alignLeft" style="width: 50px;"> { expr "TTL"; }
+								<th class="alignLeft"> { expr "Host (IP)"; }
+								<th class="alignLeft"> { expr "Rtts (in 0.1 ms)"; }
+							}
+							for-each ( $results/hop ) {
+								mvar $probes = ""; mvar $probesResponse = "";
+								var $amountProbes = count( ./probe-result );
+								for-each ( ./probe-result ) { 
+									set $probes = $probes _ "/" _ ./rtt; 
+									if ( ./probe-failure ) {
+										set $probesResponse = $probesResponse _ "\n" _ "Probe " _ position() _ "/" _ $amountProbes _ ": " _ ./probe-failure;
+									}
+								}
+								<tr> {
+									<td class="alignLeft"> { expr ./ttl-value; }
+									<td class="alignLeft"> { expr ./last-host-name _ " (" _ ./last-ip-address _ ")"; }
+									<td class="alignLeft" title="" _ substring-after( $probesResponse, "\n" ) _ ""> { 
+										expr substring-after( $probes, "/" ); 
+										if ( $probesResponse ) {
+											<span style="color: RED;"> { expr " !"; }
+										}
+									}
+								}
+							}
+						}
+					} else {
+						<p> { expr "No data to show."; }
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					<span class="left italic unselectable"> "vs. 1.01";
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+				
+				/*set $configRpcs = <clear-aaa-statistics-table> { <accounting>; }
+				set $results = jcs:execute( $connection, $configRpcs );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );*/
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-configuration" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}
+
+/*
+	Name: target-host
+	Name: target-ip
+	Name: max-hop-index
+	Name: packet-size
+	Name: hop
+	Name: hop
+		Name: ttl-value
+		Name: last-ip-address
+		Name: last-host-name
+		Name: probe-result
+		Name: probe-result
+			Name: probe-index -> 3
+			Name: ip-address -> 10.201.100.100
+			Name: host-name -> 10.201.100.100
+			Name: icmp-type ->
+			Name: icmp-code ->
+			Name: rtt -> 1204
+			Name: probe-reached -> 
+		Name: probe-result	
+	Name: traceroute-success
+*/

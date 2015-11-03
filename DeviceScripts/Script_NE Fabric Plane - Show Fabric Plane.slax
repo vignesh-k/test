@@ -1,0 +1,179 @@
+/* 
+	Script to show the status of the fabric plane.			
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0
+	Date: 29.04.2014
+	Last Modified By: bcersows
+	###Script_NE Fabric Plane - Show Fabric Plane.slax;v1.0;2014.04.29
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "NE Fabric Plane - Show Fabric Plane" */
+/* @DESCRIPTION = "Script to show the status of the fabric plane." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+/* @PROMOTEs="yes" */
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				
+				copy-of bcersows:insertCompletionTest();
+				
+				if ( $connection ) { } else {	
+					<div class="error"> {
+						expr "Konnte keine Verbindung aufbauen."; <br>;
+						expr "Abbruch folgt..";
+						expr os:exit-code(-1);
+						expr ".";
+						<xsl:message terminate="yes"> "Could not open connection from Script.";
+					}
+				}	
+				
+				copy-of bcersows:insertSoftwareInformation( $connection );
+				
+				var $rpcLocation = "get-fm-plane-location-information";
+				var $resultsLocation = jcs:execute( $connection, $rpcLocation );
+				call checkErrors( $resultsNodeSet = $resultsLocation, $connection, $msg = "Error while getting plane location." );
+				var $rpcPlane = "get-fm-plane-state-information";
+				var $resultsPlane = jcs:execute( $connection, $rpcPlane );
+				call checkErrors( $resultsNodeSet = $resultsPlane, $connection, $msg = "Error while getting plane information." );
+				
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Fabric Plane"; }
+						copy-of bcersows:insertDownloadButton( "resultsTable", "fabricPlane" );
+						if ( !$resultsPlane/fmp-plane ) {
+							copy-of bcersows:disableDownloadButton();
+						}
+					}
+
+					if ( $resultsPlane/fmp-plane ) {
+						<table id="resultsTable" class="xwide"> {
+							<tr> {
+								<th> { expr "Slot"; }
+								<th> { expr "State"; }
+								<th> { expr "Location"; }
+								<th> { expr "FPC"; }
+								<th> { expr "Link status"; }
+							}
+							
+							for-each ( $resultsPlane/fmp-plane ) {
+								<tr> {
+									var $slot = ./slot;
+									<td> { expr "Plane " _ $slot; }
+									<td> { expr ./state; }
+									<td> { expr "CB " _ $resultsLocation/fm-plane-location[plane-slot==$slot]/cb-slot; }
+									<td> " ";
+									<td> " ";
+								}
+								/* For each fru the links. */
+								if ( ./fru-name ) {
+									mvar $fruName = "";
+									mvar $pfeName = "";
+									mvar $counter = 0;
+									for-each ( ./node() ) {
+										if ( name( . ) != "" ) {
+											if ( name( . ) == "fru-name" ) {
+												set $fruName = .;
+											} else if ( name( . ) == "fru-slot" ) {
+												set $fruName = $fruName _ " " _ .;
+											} else if ( name( . ) == "pfe-slot" ) {
+												set $pfeName = .;
+											} else if ( name( . ) == "pfe-link-status" ) {
+												<tr> {
+													<td> " ";
+													<td> " ";
+													<td> " ";
+													<td> $fruName;
+													<td> "PFE " _ $pfeName _ ": " _ .;
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					} else {
+						<p> {
+							expr "Error. No planes?!";
+						}
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					<span class="left italic unselectable"> "vs. 1.0";
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}

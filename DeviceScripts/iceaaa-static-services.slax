@@ -1,0 +1,289 @@
+/*
+ * Filename      : iceaaa-static-services.slax
+ * Author        : cgiese cgiese@juniper.net
+ * Version       : GIT_BUILD
+ *
+ * Description   : ICEAAA Static Service Provisioning GIT_BUILD
+ *
+ */
+ 
+/* Junos Space specific context, name and description */
+/* @CONTEXT = "/device" */
+/* @NAME = "iceaaa-static-services" */
+/* @DESCRIPTION = "ICEAAA Static Service Provisioning GIT_BUILD" */
+/* @ISLOCAL = "true" */
+
+version 1.1;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+
+ns date = "http://exslt.org/dates-and-times";
+ns str = "http://exslt.org/strings";
+ns func extension = "http://exslt.org/functions";
+ns curl extension = "http://xml.libslax.org/curl";
+
+import "../import/junos.xsl";
+
+var $arguments = {
+    <argument> {
+        <name> "url";
+        <description> "url to remote service xml file";
+    }
+    <argument> {
+        <name> "line-id";
+        <description> "optional line-id aka agent-remote-id";
+    }
+    <argument> {
+        <name> "interface";
+        <description> "optional physical interface";
+    }
+}
+
+param $CONTEXT;
+param $url;
+param $line-id;
+param $interface;
+
+match / {
+    <op-script-results> {
+        var $localtime = date:date-time();
+
+        /* check parameters ... */
+        if(not($url)) {
+            <error> "missing parameter url";
+            <xsl:message terminate="yes">;
+        }
+        if($interface) {
+            if(not(jcs:regex( "^[gx]{1}e-[[:digit:]]{1,2}/[[:digit:]]{1,2}/[[:digit:]]{1,2}$", $interface )[1])) {
+                <error> "missing or wrong parameter interface: " _ $interface;
+                <xsl:message terminate="yes">;
+            }
+        }
+
+        /* get request xml file via http using curl ... */
+        var $options := {
+            <format> "xml";
+            <method> "get";
+            <insecure>;
+        }
+        var $curlResult = curl:single($url ,$options);
+
+        var $request := <requests> {
+           copy-of $curlResult//data;
+        }
+
+        mvar $services = 0;
+        if ( $request//services ) {
+            set $services = count($request//service);
+            <info> "xml file with "_ $services _" service elements successfully retrieved";
+        } else {
+            if ( $curlResult//headers/code ) {
+                <error> "failed to retrive xml file via curl (" _ $curlResult//headers/code _ ")";
+            } else {
+                <error> "failed to retrive xml file via curl";
+            }
+            <debug> {
+                <curl> {
+                    copy-of $curlResult;
+                }
+            }
+            <xsl:message terminate="yes">;
+        }
+
+        /* get line-id aka agent-remote-id ... */
+        var $lineId = {
+            if($line-id) {
+               expr $line-id;
+            } else {
+               expr $request//line-id;
+            }
+        }
+        if(not(jcs:regex( "^[0-9a-zA-Z\.]{5,64}$", $lineId )[1])) {
+                <error> "missing or wrong parameter line-id: " _ $lineId;
+            <xsl:message terminate="yes">;
+        }
+
+        /* connect to BNG ... */
+        <debug> "get connection to BNG";
+        var $connection = jcs:open();
+
+        <debug> "get configuration from BNG - show configuration groups iceaaa-dynamic";
+
+        /* get configuration ... */
+        var $getConfigurationMacros := {
+            <get-configuration> { 
+                <configuration> {
+                    <groups> {
+                        <name> "iceaaa-dynamic";
+                    }
+                }
+            }
+        }
+
+        var $macros = jcs:execute( $connection, $getConfigurationMacros );
+        call terminateIfError( $result = $macros, $message = "failed to get configuration" );
+
+        <debug> "create configuration change";
+
+        mvar $oldMacros = 0;
+        mvar $newMacros = 0;
+
+        var $configuration = <configuration> {
+            if($interface) {
+                <groups> {
+                    <name> "static";
+                    if ( $services > 0 ) {
+                        <apply-macro> {
+                            <name> "<#ICEAAA#" _ $lineId _ "#*>";
+                            <data> {
+                                <name> "Service-Ifd";
+                                <value> $interface;
+                            }
+                        }
+                    } else {
+                        <apply-macro delete="delete"> {
+                            <name> "<#ICEAAA#" _ $lineId _ "#*>";
+                        }
+                    }
+                }
+            }
+            <groups> {
+                <name> "iceaaa-dynamic";
+                for-each ( $macros//apply-macro[ starts-with( name, "#ICEAAA#" _ $lineId _ "#" ) ] ) {
+                    set $oldMacros = $oldMacros +1;
+                    <apply-macro> {
+                        <name> ./name;
+                        <data> {
+                            <name> "Deactivate";
+                            <value> "TRUE";
+                        }
+                    }
+                }
+                for-each ( $request//service ) {
+                    set $newMacros = $newMacros +1;
+                    var $sdesc = SDscr ?: "";
+                    <apply-macro> {
+                        <name> "#ICEAAA#" _ $lineId _ "#" _ vid;
+                        <data> {
+                            <name> "Time";
+                            <value> $localtime;
+                        }
+                        <data> {
+                            <name> "Activate";
+                            <value> "TRUE";
+                        }
+                        <data> {
+                            <name> "Acct-Session-Id";
+                            <value> "STATIC";
+                        }
+                        <data> {
+                            <name> "ANP-Tag";
+                            <value> "NA";
+                        }
+                        <data> {
+                            <name> "Service-String";
+                            <value> name _ "()";
+                        }
+                        /* dhcprelay services ... */
+                        if ( name == "dhcprelay" ) {
+                            <data> {
+                                <name>"Service-BW";
+                                if ( Service-BW ) {
+                                    <value> Service-BW;
+                                } else {
+                                    <value> "20000";
+                                }
+                            }
+                            <data> {
+                                <name>"SDscr";
+                                <value> "#DHCPRELAY#" _ $lineId _ "#NA#" _ vid _ "#" _ $sdesc;
+                            }
+                            <data> {
+                                <name> "access-id";
+                                <value> access-id ?: "";
+                            }
+                            <data> {
+                                <name> "Server";
+                                <value> Server ?: "";
+                            }
+                        }
+                        /* ethp2p aka EVPL-Light services ... */
+                        if ( name == "ethp2p" ) {
+                            mvar $serviceBw = 100000;
+                            if ( Service-BW ) {
+                                set $serviceBw = number(Service-BW);
+                            }
+                            <data> {
+                                <name> "Service-BW";
+                                <value> $serviceBw;
+                            }
+                            <data> {
+                                <name> "SDscr";
+                                <value> "#ETHP2P#" _ $lineId _ "#NA#" _ vid _ "#" _ $sdesc;
+                            }
+                            <data> {
+                                <name> "sourceID";
+                                <value> sourceID;
+                            }
+                            <data> {
+                                <name> "targetID";
+                                <value> targetID;
+                            }
+                            call bwPercentage ( $bw = BW-BE, $name = "BW-BE", $serviceBw );
+                            call bwPercentage ( $bw = BW-LL, $name = "BW-LL", $serviceBw );
+                            call bwPercentage ( $bw = BW-LD, $name = "BW-LD", $serviceBw );
+                            call bwPercentage ( $bw = BW-VO, $name = "BW-VO", $serviceBw );
+                            <data> {
+                                <name> "optpro";
+                                <value> optpro  ?: "";
+                            }
+                            if ( Access-BW ) {
+                                <data> {
+                                    <name> "Access-BW";
+                                    <value> Access-BW;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        <debug> "load configuration";
+
+        var $configResults := {
+            call jcs:load-configuration( $connection, $configuration, $action = "merge");
+        }
+        call terminateIfError( $result = $configResults, $message = "failed to update configuration");
+
+        <successfull> "SERVICE COUNTER OLD: " _ $oldMacros _ " NEW: " _ $newMacros;
+    }
+}
+
+template terminateIfError( $result, $message ) {
+    if( $result//self::xnm:error ) {
+        var $error = {
+            <error> $message;
+            <debug> {
+                copy-of $result;
+            }
+        }
+        copy-of $error;
+        <xsl:message terminate="yes">;
+    }
+}
+
+template bwPercentage ( $bw, $name, $serviceBw ) {
+    var $data = {
+        <data> {
+            <name> $name;
+            if ( $bw <= 100 ) {
+                <value> floor( $bw * $serviceBw div 100);
+            } else {
+                <value> $bw;
+            }
+        }
+    }
+    copy-of $data;
+}

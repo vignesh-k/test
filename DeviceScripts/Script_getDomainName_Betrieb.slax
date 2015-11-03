@@ -1,0 +1,130 @@
+/* Here too. */
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns curl extension = "http://xml.libslax.org/curl";
+ns date = "http://exslt.org/dates-and-times";
+ns str = "http://exslt.org/strings";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "Domain Name auslesen" */
+/* @DESCRIPTION = "Liest die Domain Name(s) eines oder mehrerer Devices aus der Konfiguration und gibt diese aus." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
+/* @VARIABLECONTEXT = "[]" */
+/* @PASSDEVICECREDENTIALS = "true" */
+
+mvar $counter = 0;
+mvar $output = "";
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf. Kann mehrere Devices enthalten.";
+	}
+	<arguments> {
+		<name> "credentials";
+		<description> "Context beim Aufruf. Kann mehrere Devices enthalten.";
+	}
+}
+param $CONTEXT;
+param $credentials;
+
+match / {
+	<op-script-results> {
+		<output> {
+			expr "Context: " _ $CONTEXT _ " \nCredentials: " _ $credentials _ "\n";
+			
+			mvar $count = 1;    /*count of devices    */
+			mvar $hostname;       /* credentials of user@ip           */
+			mvar $splitHostname;  /* array of user and ip credentials */
+			mvar $ip;             /* credentials ip address           */
+			mvar $user;           /* credentials username             */
+			mvar $password;       /* credentials password             */
+			
+			/* Split interfaces and Credentials */
+			var $devices = jcs:split("\\|", $CONTEXT);
+			var $splitCredentials = str:split( $credentials , "\\;" );
+					
+			var  $get-rpc = <get-configuration database="committed" inherit="inherit"> {
+				<configuration> {
+					<system> {
+						<domain-name>;
+					}
+				}
+			}
+			/*var $results;*/
+			
+			/*<output> "Engine-ID fuer ist " _ $results/snmp-v3-general-information/snmp-v3-engine-information/engine-id _"."  _ $hostname;*/
+			
+			/* Loop through every device */
+			for-each ( $devices ) {
+				var $myDevice = jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", (.) )[2];
+				expr $count _ " " _ . _ " -> " _ $myDevice _ ":";
+				
+				/* Using the count of unique devices found, the correct connection */
+				/* parameters to be used can be derived from $splitCredentials     */
+				var $splitCredential = str:split( $splitCredentials[$count] , "\\:" );
+				set $count = $count + 1;
+				
+				set $hostname = $splitCredential[1];
+				set $password = $splitCredential[2];
+				set $splitHostname = str:split( $hostname[1] , "\@");
+				set $user = $splitHostname[1];
+				set $ip = $splitHostname[2];
+				
+				var $connection = jcs:open( $ip , $user , $password );
+
+				if ($connection/..//xnm:error) {
+					call rpc_failure($rpc = $connection/.., $message = "Error connecting on mgd on this RE");
+					<xsl:message terminate="yes"> ;
+				}
+				
+				var $results = jcs:execute($connection , $get-rpc);
+				
+				if ($results/..//xnm:error) {
+					call rpc_failure($rpc = $results/.., $message = "Error executing command show configuration interfaces");
+					<xsl:message terminate="yes"> ;
+				}
+				var $close-results = jcs:close ( $connection );
+				if ($close-results/..//xnm:error) {
+					call rpc_failure($rpc = $close-results/.., $message = "Error closing connection.");
+					<xsl:message terminate="yes"> ;
+				}
+				
+				/*var $results = jcs:invoke( ., $get-rpc );*/
+				/* Known Errors */
+				/*if ( $results//self::xnm:error ) {
+					for-each ( $results//self::xnm:error ) {
+						<errors> message;
+					}
+				}*/
+				expr "\tName ist " _ $results/system/domain-name _".\n";
+
+			}
+			
+			expr "\n\n\n\n\n\n\n\n\n";
+			copy-of $junos-context;
+
+			
+			/*<output> "------------------------------------------------";
+			<output> " ****  ****  **** End of script ****  ****  ****";
+			<output> "------------------------------------------------";*/
+		}
+		
+	}
+}
+
+template rpc_failure($rpc, $message = "Following errors occurred while trying to gather data: ") {
+	expr jcs:syslog("daemon.error", $message);
+	for-each ($rpc//xnm:error) {
+		expr jcs:syslog("daemon.error", message);
+	}
+}

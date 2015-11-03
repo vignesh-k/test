@@ -1,0 +1,126 @@
+/* 
+	Script to check the availability of IPTV services and to output a respective message.
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0d
+	Date: 04.08.2014
+	Last Modified By: bcersows
+	###Script_checkServicesStatus;v1.0d;2014.08.04
+*/
+
+/*
+	Changelog:
+	----------
+	1.0c; 22.04.2014: 
+		- First version with stub output
+	1.0d; 04.08.2014:
+		- Output made ready for IT..
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "Check IPTV and IMS" */
+/* @DESCRIPTION = "Checks the availability of IPTV and IMS on a BNG." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'LFM-INTERFACES','parameterscope':'devicespecific','selectionvaluesxpath':'/device/configuration/protocols/oam/ethernet/link-fault-management/interface/name/text()'}]" */
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf. Kann mehrere Devices enthalten.";
+	}
+}
+param $CONTEXT;
+
+match / {
+	<op-script-results> {
+		var $devices = jcs:split("\\|", $CONTEXT);
+		
+		var $varNotificationAvailable = "available";
+		var $varNotificationNotAvailable = "unavailable";
+		
+		var $connection = jcs:open();
+		if ( $connection ) { } else {	
+			<output> {
+				<error> "Konnte keine Verbindung aufbauen. Abbruch folgt."; 
+				<xsl:message terminate="yes"> "Konnte keine Verbindung aufbauen. Abbruch folgt.";
+			}
+		}	
+		
+		/* Fetch PIM, IGMP, dynamic profiles "entertain" and "ipone". */
+		var  $get-rpc = <get-configuration> {
+			<configuration> {
+				<protocols> {
+					<pim>;
+					<igmp>;
+				}
+				<dynamic-profiles>;
+			}
+		}
+		var $results = jcs:execute( $connection, $get-rpc );
+		/* Known Errors */
+		if ( $results//self::xnm:error ) {
+			<output> {
+				for-each ( $results//self::xnm:error ) {
+					<errors> message;
+				}
+			}
+		}
+		
+		var $iptvStatus = {
+			if ( $results/dynamic-profiles[name="IPTV"] ) {
+				expr $varNotificationAvailable;
+			} else {
+				expr $varNotificationNotAvailable;
+			}
+		}
+		var $imsStatus = {
+			if ( $results/dynamic-profiles[name="VOICE"] ) {
+				expr $varNotificationAvailable;
+			} else {
+				expr $varNotificationNotAvailable;
+			}
+		}
+		
+		var $output = {
+			<content> {
+				<services> {
+					<service> {
+						<name> "iptv";
+						<status> $iptvStatus;
+					}
+					<service> {
+						<name> "ims";
+						<status> $imsStatus;
+					}
+				}
+				<protocols> {
+					if ( $results/protocols/pim ) {
+						<pim>;
+					}
+					if ( $results/protocols/igmp ) {
+						<igmp>;
+					}
+				}
+			}
+			
+		}
+		<output> {
+			copy-of $output;
+		}
+		
+		expr jcs:close( $connection );		
+	}
+}

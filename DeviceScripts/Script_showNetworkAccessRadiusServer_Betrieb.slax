@@ -1,0 +1,184 @@
+/* 
+Script to simulate the "show network-access aaa radius-servers detail" command.			
+*/
+
+/*
+	Version: 1.0
+	Date: 19.02.2014
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns curl extension = "http://xml.libslax.org/curl";
+ns date = "http://exslt.org/dates-and-times";
+ns str = "http://exslt.org/strings";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "Looking Glass Radius Servers" */
+/* @DESCRIPTION = "Listet Informationen über die Radius-Profile und -Server eines Devices auf." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			/*if ( jcs:regex( "/device\\[name=\".*\"\\]/configuration/access/radius-server\\[name=\".*\"\\]", $CONTEXT ) ) {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\]/configuration/access/radius-server\\[name=\"(.*)\"\\]", $CONTEXT )[2];
+			} else {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\].*", $CONTEXT )[2];
+			}*/
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				
+				if ( $connection ) { } else {	
+					<div class="error"> {
+						expr "Konnte keine Verbindung aufbauen."; <br>;
+						expr "Abbruch folgt.";
+					}
+				}	
+				
+				/*<div id="floatingButton" onclick="toggleAll(this);"> { 
+					expr "Alle oeffnen.";
+				}*/
+				
+				copy-of bcersows:insertSoftwareInformation( $connection );
+				
+				var $rpc = <get-radius-servers-table> {
+					<detail>;
+				}
+				set $results = jcs:execute( $connection, $rpc );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				/*<p class="bold hiddenButton" onclick="toggle(this, 2);"> {
+					expr "Hardware";
+					<span id="hiddenButton_2_span" class="hiddenButtonSpan"> { expr ">"; }
+				}
+				<div id="hiddenDiv_2" class="hidden" style="display: none;"> {*/
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Profiles"; }
+					}
+
+					if ( $results/aaa-module-profile-radius-servers ) {
+						<div> {
+							for-each ( $results/aaa-module-profile-radius-servers/node() ) {
+								var $tagname = name ( . );
+								if ( $tagname == "profile-name" ) {
+									<span style="display: block;" class="lpadding5" > { expr "Profile: " _ .; }
+								} else if ( $tagname == "server-address" ) {
+									<span style="display: block;" class="lpadding15" > { expr "Server address: " _ .; }
+								} else if ( $tagname == "rtt" ) {
+									<span style="display: block;" class="lpadding30" > { expr "RTT: " _ .; }
+								} else if ( $tagname == "authentication-port" ) {
+									<span style="display: block;" class="lpadding30" > { expr "Authentication Port: " _ .; }
+								} else if ( $tagname == "accounting-port" ) {
+									<span style="display: block;" class="lpadding30" > { expr "Accounting Port: " _ .; }
+								} else if ( $tagname == "available-status" ) {
+									<span style="display: block;" class="lpadding30" > { expr "Status: " _ .; }
+								} 
+							}
+						}
+					} else {
+						<p> {
+							expr "No configured profiles.";
+						}
+					}
+					
+					copy-of bcersows:insertBackButton();
+					
+					<p class="bold subheader">{
+						<span class="left"> { expr "RADIUS Servers"; }
+					}
+					
+					if ( $results/aaa-module-radius-servers-statistics ) {
+						<div> {
+							for-each ( $results/aaa-module-radius-servers-statistics/node() ) {
+								var $tagname = name ( . );
+								if ( $tagname == "server-address" ) {
+									<span style="display: block;" class="lpadding5" > { expr "" _ .; }
+								} else if ( $tagname != "" ) {
+									<span style="display: block;" class="lpadding30 capitalize" > { expr str:replace( $tagname, "-", " " ) _ ": " _ .; }
+								} 
+							}
+						}
+					} else {
+						<p> {
+							expr "No configured radius servers.";
+						}
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					expr "Dauer der Ausfuehrung: " _ $duration _ "s. ";
+				}
+				
+				/*set $configRpcs = <clear-aaa-statistics-table> { <accounting>; }
+				set $results = jcs:execute( $connection, $configRpcs );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );*/
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}
