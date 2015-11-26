@@ -15,7 +15,7 @@ From Enrico:
 - show ldp session
 - show isis adjacency
 - show bgp summary
-- show route summary
+- show route summary test RK
 - show ntp associations
 
 */
