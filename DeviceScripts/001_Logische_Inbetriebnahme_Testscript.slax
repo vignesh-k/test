@@ -11,7 +11,7 @@ show chassis fan:
 From Enrico:
 - show chassis alarms
 - show chassis fpc pic-status		get-pic-information
-- show ldp neighbor
+- show ldp neighbor tetets asds f sdf sdf 
 - show ldp session
 - show isis adjacency
 - show bgp summary
@@ -46,7 +46,7 @@ import "../import/junos.xsl";
 
 /* @CONTEXT = "/device" */
 /* @NAME = "Inbetriebnahme-Check" */
-/* @DESCRIPTION = "Listet Informationen über ein Device auf." */
+/* @DESCRIPTION = "Listet Informationen Ã¼ber ein Device auf." */
 /* @ISLOCAL = "true" */
 /* @EXECUTIONTYPE = "SINGLEEXECUTION" */
 /* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
