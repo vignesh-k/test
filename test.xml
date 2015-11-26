@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="iso-8859-1"?><cli-configlets>
+<cli-configlet>
+<!-- mandatory --><name>EXAMPLE 144445568</name>
+<category>jjj jjjj</category>
+<context/>
+<!-- mandatory --><device-family>EX</device-family>
+<description/>
+<!-- mandatory --><execution-type>Single</execution-type>
+<preview-show-parameters>true</preview-show-parameters>
+<preview-show-configuration>true</preview-show-configuration>
+<postview-show-parameters>true</postview-show-parameters>
+<postview-show-configuration>true</postview-show-configuration>
+
+<cli-configlet-pages><!--  At least one configlet page required -->
+<cli-configlet-page>
+<page-number>1</page-number>
+<!-- mandatory --><cli-text>{
+
+}</cli-text>
+</cli-configlet-page>
+</cli-configlet-pages>
+
+<cli-configlet-params>
+</cli-configlet-params>
+
+</cli-configlet>
+
+
+
+<cli-configlet>
+<!-- mandatory --><name>EXAMPLE 011</name>
+<category/>
+<context/>
+<!-- mandatory --><device-family>J/SRX/LN</device-family>
+<description/>
+<!-- mandatory --><execution-type>Single</execution-type>
+<preview-show-parameters>true</preview-show-parameters>
+<preview-show-configuration>true</preview-show-configuration>
+<postview-show-parameters>true</postview-show-parameters>
+<postview-show-configuration>true</postview-show-configuration>
+
+<cli-configlet-pages><!-- At least one configlet page required -->
+<cli-configlet-page>
+<page-number>1</page-number>
+<!-- mandatory --><cli-text> F</cli-text>
+</cli-configlet-page>
+</cli-configlet-pages>
+
+<cli-configlet-params>
+</cli-configlet-params>
+
+</cli-configlet>
+
+
+
+</cli-configlets>
