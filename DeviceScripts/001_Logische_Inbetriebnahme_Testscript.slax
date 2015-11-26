@@ -15,7 +15,7 @@ From Enrico:
 - show ldp session
 - show isis adjacency
 - show bgp summary
-- show route summary
+- show route summary test RK
 - show ntp associations
 
 */
@@ -46,7 +46,7 @@ import "../import/junos.xsl";
 
 /* @CONTEXT = "/device" */
 /* @NAME = "Inbetriebnahme-Check" */
-/* @DESCRIPTION = "Listet Informationen über ein Device auf." */
+/* @DESCRIPTION = "Listet Informationen Ã¼ber ein Device auf." */
 /* @ISLOCAL = "true" */
 /* @EXECUTIONTYPE = "SINGLEEXECUTION" */
 /* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
