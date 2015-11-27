@@ -1,6 +1,6 @@
 /*
 	Script to check some commands, saves their output to a file and allows to compare those values later with the current ones.
-	Used before and after a JunOS upgrade.
+	Used before and after a JunOS upgrade. -- First change
 */
 
 /*
