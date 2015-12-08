@@ -1,0 +1,559 @@
+/*
+ * Filename      : ICEAAA_Interface-Information.slax
+ * Author        : Frank Reimer freimer@juniper.net
+ * Build         : CVS_BUILD
+ * Platform      : Junos Space / iCE AAA Manager
+ * Release       : iCE AAA Manager 13.3+
+ * SVN INFO      :
+ *
+ * $Revision: 38925 $
+ * $Date: 2014-12-08 17:44:00 +0100 (Mo, 08 Dez 2014) $
+ * $Author: freimer $
+ *
+ * Description   : Executed in iCE AAA Manager to be used to get the physical interface information for a BIP Session
+ *
+ *   Assumptions
+ *   1. Executed via iCE AAA Manager
+ *   2. All Services are running on the same physical interface
+ *
+ */
+
+version 1.1;
+
+/* Namespace declarations */
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns curl extension = "http://xml.libslax.org/curl";
+ns func extension = "http://exslt.org/functions";
+ns jspace = "http://jspace-utils/asharp@juniper.net";
+
+/* Imports */
+import "../import/junos.xsl";
+
+
+/* Junos Space specific context, name and description */
+/* @CONTEXT = "/iceaaa-manager/device/subscriber" */
+/* @NAME = "Physical interface information" */
+/* @DESCRIPTION = "Physical Interface Information for a given Line-ID" */
+/* @ISLOCAL = "true" */
+/* @PASSSPACEAUTHHEADER = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+
+var $curl = curl:open();
+
+var $arguments = {
+    <argument> {
+        <name> "CONTEXT";
+        <description> "The context associated with this script.";
+    }
+}
+param $CONTEXT;
+param $JSESSIONID;
+param $JSESSIONIDSSO;
+param $VIPADDRESS;
+
+
+match / {
+  <op-script-results> {
+
+    /* Expand Line_ID from Context Variable */
+    var $lineId = jcs:regex( "line-id=\"(.+)\"", ($CONTEXT) )[2];
+
+    /* identify the fabric node that the JSESSIONID is associated with */
+    var $fabric = jcs:regex("\.(space-[A-Za-z0-9]+):server",$JSESSIONID)[2];
+
+    /* Prepare the API call */
+    /* Build the complete URI */
+    var $uri = jspace:server( $fabric _ ":8080" , "/api/juniper/iceaaa-manager/lines/" _ $lineId _ "/services" );
+
+    /* Prepare Curl options and html headers */
+    var $options = {
+      <format> "xml";
+      <header name="Accept"> "application/vnd.juniper.iceaaa-manager.lines.line.services+xml;q=\"0.02\";version=\"2\"";
+      <header name="Content-Type"> "application/vnd.juniper.iceaaa-manager.lines.line.services+xml;q=\"0.02\";version=\"2\"";
+      <header name="Cookie"> "JSESSIONID=" _ $JSESSIONID _ ";Path=/;";
+      <header name="Cookie"> "JSESSIONIDSSO=" _ $JSESSIONIDSSO _ ";Path=/;";
+
+    }
+
+    /* The API Call */
+    var $api_results = curl:single($uri, $options);
+
+    /* If we see a http code not equal to 2xx or if we have an error message in the result, we terminate */
+    if ((jcs:regex( ".", $api_results/headers/code)[1] != 2) || ($api_results/error)) {
+      <output>"Error in communication found: " _ $api_results/error;
+      <output>"Result Code: " _ $api_results/headers/code;
+      terminate;
+    }
+
+    /* Get one logical interface from the response */
+    var $ifl = $api_results/data/services/service/interface-name;
+    /* Split the physical interface out of the logical interface */
+    var $ifd = jcs:split("\\.", $ifl)[1];
+
+    /* Open the Device Connection */
+    var $connection = jcs:open();
+
+    /* get extensive information for the selected IFD */
+    var $interface-details-rpc = <get-interface-information> {
+      <interface-name> $ifd;
+      <extensive>;
+    }
+    var $results = jcs:execute( $connection , $interface-details-rpc );
+    if ($results/..//xnm:error) {
+      call rpc_failure($rpc = $results/.., $message = "Error collecting physical interface information.");
+      <xsl:message terminate="yes"> ;
+    }
+
+    /* Output the interface information as html'ized information */
+    <output> {
+      <html> {
+        <head> {
+          <title> "Interface information:";
+          <style type="text/css"> {
+            expr "body { font-size: 12px;border-color: transparent;background-color: transparent}";
+            expr "td { font-size: 12px;}";
+            expr "p { font-size: 12px;}";
+            expr "table { font-size: 0.75em; width: 99% }";
+            expr "#tableheader { font-weight: bolder;text-align: center; }";
+            expr "#tableheaderleft { font-weight: bolder;text-align: left; }";
+            expr "#paddedcellleft { padding: 5px; text-align: left }";
+            expr "#paddedcellright { padding: 5px; text-align: right }";
+            expr "#paddedcellcenter { padding: 5px; text-align: center }";
+            expr "#right {text-align: right }";
+            expr "#center {text-align: center}";
+            expr "#left {text-align: left}";
+          }
+        }
+        <body> {
+
+          /*
+          expr "Line ID " _ $lineId;
+          expr "Interface " _ $ifd;
+          */
+
+
+
+          <table> {
+            <colgroup> {
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+              <col width="5%">;
+            }
+            if ($results/physical-interface/name) {
+              <tr> {
+                <td colspan="20"> {
+                  expr "Interface information for " _ $results/physical-interface/name;
+                  if ($results/physical-interface/admin-status) {
+                    expr ", " _ $results/physical-interface/admin-status/@junos:format;
+                  }
+                  if ($results/physical-interface/oper-status) {
+                    expr ", Physical link is " _ jcs:printf( "%jcs" , $results/physical-interface/oper-status );
+                  }
+                }
+              }
+              if ($results/physical-interface/description) {
+                <tr> {
+                  <td colspan="20"> {
+                    uexpr "Description: " _ $results/physical-interface/description;
+                  }
+                }
+              }
+              if ($results/physical-interface/link-level-type) {
+                <tr> {
+                  <td colspan="20"> {
+                    expr "Link-level type: " _ $results/physical-interface/link-level-type;
+                    if ($results/physical-interface/mtu) {
+                      expr ", MTU: " _ $results/physical-interface/mtu;
+                    }
+                    if ($results/physical-interface/sonet-mode) {
+                      expr ", " _ $results/physical-interface/sonet-mode _ " mode";
+                    }
+                    if ($results/physical-interface/speed) {
+                      expr ", Speed: " _ $results/physical-interface/speed;
+                    }
+                    if ($results/physical-interface/bpdu-error) {
+                      expr ", BPDU Error: " _ jcs:printf( "%jcs" , $results/physical-interface/bpdu-error );
+                    }
+                    if ($results/physical-interface/loopback) {
+                      expr ", Loopback: " _ jcs:printf( "%jcs" , $results/physical-interface/loopback );
+                    }
+                  }
+                }
+              }
+              if ($results/physical-interface/if-device-flags) {
+                <tr> {
+                  <td colspan="20"> {
+                    /* Traverse flags to get flag name.*/
+                    expr "Device flags: ";
+                    for-each ( $results/physical-interface/if-device-flags/* ) {
+                      var $myflag = substring-after( name() , "ifdf-" );
+                      expr jcs:printf( "%jcs" , $myflag ) _ " ";
+                    }
+                  }
+                }
+              }
+              if ($results/physical-interface/if-config-flags) {
+                <tr> {
+                  <td colspan="20"> {
+                    /* Traverse flags to get flag name.*/
+                    expr "Interface flags: ";
+                    for-each ($results/physical-interface/if-config-flags/*) {
+                      if ( name() != "internal-flags" ) {
+                        var $myflag = substring-after( name() , "-" );
+                        expr jcs:printf( "%jcs" , $myflag ) _ " ";
+                      }
+                      /* Watch for internal flags */
+                      else if ( $results/physical-interface/if-config-flags/internal-flags ) {
+                        expr "Internal: " _ ($results/physical-interface/if-config-flags/internal-flags) _ " ";
+                      }
+                    }
+                  }
+                }
+              }
+              if ($results/physical-interface/if-media-flags) {
+                <tr> {
+                  <td colspan="20"> {
+                    /* Traverse flags to get flag name.*/
+                    expr "Link flags: ";
+                    for-each ($results/physical-interface/if-media-flags/*) {
+                      if ( name() != "internal-flags" ) {
+                        var $myflag = substring-after( name() , "-" );
+                        expr jcs:printf( "%jcs" , $myflag ) _ " ";
+                      }
+                      /* Watch for internal flags */
+                      else if ( $results/physical-interface/if-media-flags/internal-flags ) {
+                        expr "Internal: " _ ($results/physical-interface/if-media-flags/internal-flags) _ " ";
+                      }
+                    }
+                  }
+                }
+              }
+              if ($results/physical-interface/current-physical-address) {
+                <tr> {
+                  <td colspan="20"> {
+                    expr "Current address: " _ $results/physical-interface/current-physical-address _ ", Hardware address: " _ $results/physical-interface/hardware-physical-address;
+                  }
+                }
+              }
+              if ($results/physical-interface/interface-flapped) {
+                <tr> {
+                  <td colspan="20"> {
+                    expr "Last flapped   : " _ $results/physical-interface/interface-flapped;
+                  }
+                }
+              }
+              if ($results/physical-interfaces/statistics-cleared) {
+                <tr> {
+                  <td colspan="20"> {
+                    expr "Statistics last cleared: " _ $results/physical-interfaces/statistics-cleared;
+                  }
+                }
+              }
+              if ($results/physical-interface/traffic-statistics) {
+                <tr> {
+                  <td colspan="20" id="tableheaderleft"> {
+                    expr "Traffic statistics:";
+                  }
+                }
+                if ($results/physical-interface/traffic-statistics/input-bytes) {
+                  <tr> {
+                    <td colspan="4" id="paddedcellright"> {
+                      expr "Input bytes:";
+                    }
+                    <td colspan="4" id="paddedcellcenter"> {
+                      expr  $results/physical-interface/traffic-statistics/input-bytes;
+                    }
+                    if ($results/physical-interface/traffic-statistics/input-bps) {
+                      <td colspan="4" id="paddedcellcenter"> {
+                        expr $results/physical-interface/traffic-statistics/input-bps _ " bps";
+                      }
+                    }
+                  }
+                }
+                if ($results/physical-interface/traffic-statistics/output-bytes) {
+                  <tr> {
+                    <td colspan="4" id="paddedcellright"> {
+                      expr "Output bytes:";
+                    }
+                    <td colspan="4" id="paddedcellcenter"> {
+                      expr  $results/physical-interface/traffic-statistics/output-bytes;
+                    }
+                    if ($results/physical-interface/traffic-statistics/output-bps) {
+                      <td colspan="4" id="paddedcellcenter"> {
+                        expr $results/physical-interface/traffic-statistics/output-bps _ " bps";
+                      }
+                    }
+                  }
+                }
+                if ($results/physical-interface/traffic-statistics/input-packets) {
+                  <tr> {
+                    <td colspan="4" id="paddedcellright"> {
+                      expr "Input packets:";
+                    }
+                    <td colspan="4" id="paddedcellcenter"> {
+                      expr $results/physical-interface/traffic-statistics/input-packets;
+                    }
+                    if ($results/physical-interface/traffic-statistics/input-pps) {
+                      <td colspan="4" id="paddedcellcenter"> {
+                        expr $results/physical-interface/traffic-statistics/input-pps _ " pps";
+                      }
+                    }
+                  }
+                }
+                if ($results/physical-interface/traffic-statistics/output-bytes) {
+                  <tr> {
+                    <td colspan="4" id="paddedcellright"> {
+                      expr "Output packets:";
+                    }
+                    <td colspan="4" id="paddedcellcenter"> {
+                      expr $results/physical-interface/traffic-statistics/output-packets;
+                    }
+                    if ($results/physical-interface/traffic-statistics/output-pps) {
+                      <td colspan="4" id="paddedcellcenter"> {
+                        expr $results/physical-interface/traffic-statistics/output-pps _ " pps";
+                      }
+                    }
+                  }
+                }
+                if ($results/physical-interface/traffic-statistics/ipv6-transit-statistics) {
+                  <tr> {
+                    <td colspan="20" id="tableheaderleft"> {
+                      expr "IPv6 transit statistics:";
+                    }
+                  }
+                  if ($results/physical-interface/traffic-statistics/ipv6-transit-statistics/input-bytes) {
+                    <tr> {
+                      <td colspan="4" id="paddedcellright"> {
+                        expr "Input bytes:";
+                      }
+                      <td colspan="4" id="paddedcellcenter"> {
+                        expr $results/physical-interface/traffic-statistics/ipv6-transit-statistics/input-bytes;
+                      }
+                      if ($results/physical-interface/traffic-statistics/ipv6-transit-statistics/input-bps) {
+                        <td colspan="4" id="paddedcellcenter"> {
+                          expr $results/physical-interface/traffic-statistics/ipv6-transit-statistics/input-bps _ " bps";
+                        }
+                      }
+                    }
+                  }
+                  if ($results/physical-interface/traffic-statistics/ipv6-transit-statistics/output-bytes) {
+                    <tr> {
+                      <td colspan="4" id="paddedcellright"> {
+                        expr "Output bytes:";
+                      }
+                      <td colspan="4" id="paddedcellcenter"> {
+                        expr $results/physical-interface/traffic-statistics/ipv6-transit-statistics/output-bytes;
+                      }
+                      if ($results/physical-interface/traffic-statistics/ipv6-transit-statistics/output-bps) {
+                        <td colspan="4" id="paddedcellcenter"> {
+                          expr $results/physical-interface/traffic-statistics/ipv6-transit-statistics/output-bps _ " bps";
+                        }
+                      }
+                    }
+                  }
+                  if ($results/physical-interface/traffic-statistics/ipv6-transit-statistics/input-packets) {
+                    <tr> {
+                      <td colspan="4" id="paddedcellright"> {
+                        expr "Input packets:";
+                      }
+                      <td colspan="4" id="paddedcellcenter"> {
+                        expr $results/physical-interface/traffic-statistics/ipv6-transit-statistics/input-packets;
+                      }
+                      if ($results/physical-interface/traffic-statistics/ipv6-transit-statistics/input-pps) {
+                        <td colspan="4" id="paddedcellcenter"> {
+                          expr $results/physical-interface/traffic-statistics/ipv6-transit-statistics/input-pps _ " pps";
+                        }
+                      }
+                    }
+                  }
+                  if ($results/physical-interface/traffic-statistics/ipv6-transit-statistics/output-packets) {
+                    <tr> {
+                      <td colspan="4" id="paddedcellright"> {
+                        expr "Output packets:";
+                      }
+                      <td colspan="4" id="paddedcellcenter"> {
+                        expr $results/physical-interface/traffic-statistics/ipv6-transit-statistics/output-packets;
+                      }
+                      if ($results/physical-interface/traffic-statistics/ipv6-transit-statistics/output-pps) {
+                        <td colspan="4" id="paddedcellcenter"> {
+                          expr $results/physical-interface/traffic-statistics/ipv6-transit-statistics/output-pps _ " pps";
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              if ($results/physical-interface/input-error-list) {
+                <tr> {
+                  <td colspan="20" id="tableheaderleft"> {
+                    expr "Input errors:";
+                  }
+                }
+                <tr> {
+                  <td colspan="20"> {
+                    expr "Errors: " _ $results/physical-interface/input-error-list/input-errors;
+                    expr ", Drops: " _ $results/physical-interface/input-error-list/input-drops;
+                    expr ", Framing errors: " _ $results/physical-interface/input-error-list/framing-errors;
+                    expr ", Runts: " _ $results/physical-interface/input-error-list/input-runts;
+                    expr ", Policed discards: " _ $results/physical-interface/input-error-list/input-discards;
+                    expr ", L3 incompletes: " _ $results/physical-interface/input-error-list/input-l3-incompletes;
+                    expr ", L2 channel errors: " _ $results/physical-interface/input-error-list/input-l2-channel-errors;
+                    expr ", L2 mismatch timeouts: " _ $results/physical-interface/input-error-list/input-l2-mismatch-timeouts;
+                    expr ", FIFO errors: " _ $results/physical-interface/input-error-list/input-fifo-errors;
+                    expr ", Resource errors: " _ $results/physical-interface/input-error-list/input-resource-errors;
+                  }
+                }
+              }
+              if ($results/physical-interface/output-error-list) {
+                <tr> {
+                  <td colspan="20" id="tableheaderleft"> {
+                    expr "Output errors:";
+                  }
+                }
+                <tr> {
+                  <td colspan="20"> {
+                    expr "Carrier transitions: " _ $results/physical-interface/output-error-list/carrier-transitions;
+                    expr ", Errors: " _ $results/physical-interface/output-error-list/output-errors;
+                    expr ", Drops: " _ $results/physical-interface/output-error-list/output-drops;
+                    expr ", Collisions: " _ $results/physical-interface/output-error-list/output-collisions;
+                    expr ", Aged packets: " _ $results/physical-interface/output-error-list/aged-packets;
+                    expr ", FIFO errors: " _ $results/physical-interface/output-error-list/output-fifo-errors;
+                    expr ", HS link CRC errors: " _ $results/physical-interface/output-error-list/hs-link-crc-errors;
+                    expr ", MTU errors: " _ $results/physical-interface/output-error-list/mtu-errors;
+                    expr ", Resource errors: " _ $results/physical-interface/output-error-list/output-resource-errors;
+                  }
+                }
+              }
+              if($results/physical-interface/queue-counters) {
+                <tr> {
+                  <td colspan="20"> {
+                    expr $results/physical-interface/queue-counters/interface-cos-short-summary/intf-cos-queue-type _ ": ";
+                    expr $results/physical-interface/queue-counters/interface-cos-short-summary/intf-cos-num-queues-supported _ " supported, ";
+                    expr $results/physical-interface/queue-counters/interface-cos-short-summary/intf-cos-num-queues-in-use _ " in use";
+                  }
+                }
+                <tr> {
+                  <td colspan="3" id="paddedcellcenter"> {
+                    expr "Queue counters";
+                  }
+                  <td colspan="4" id="paddedcellcenter"> {
+                    expr "Queued pks";
+                  }
+                  <td colspan="4" id="paddedcellcenter"> {
+                    expr "Trans. pks";
+                  }
+                  <td colspan="4" id="paddedcellcenter"> {
+                    expr "Dropped pks";
+                  }
+                  <td colspan="5" id="paddedcellcenter"> {
+                    expr "Forwarding class name";
+                  }
+                }
+                for-each ($results/physical-interface/queue-counters/queue) {
+                  <tr> {
+                    <td colspan="3" id="paddedcellcenter"> {
+                      expr queue-number;
+                    }
+                    <td colspan="4" id="paddedcellcenter"> {
+                      expr queue-counters-queued-packets;
+                    }
+                    <td colspan="4" id="paddedcellcenter"> {
+                      expr queue-counters-trans-packets;
+                    }
+                    <td colspan="4" id="paddedcellcenter"> {
+                      expr queue-counters-total-drop-packets;
+                    }
+                    <td colspan="5" id="paddedcellleft"> {
+                      expr forwarding-class-name;
+                    }
+                  }
+                }
+              }
+              if ($results/physical-interface/active-alarms) {
+                <tr> {
+                  <td colspan="20"> {
+                    expr "   Active alarms  : ";
+                    for-each ($results/physical-interface/active-alarms/interface-alarms/*) {
+                      if ( name(.)  == "alarm-not-present") {
+                        expr "None ";
+                      }
+                      else if ( name(.) == "ethernet-alarm-link-down") {
+                        expr "LINK ";
+                      }
+                      else {
+                        expr name() _ " ";
+                      }
+                    }
+                  }
+                }
+              }
+              if ($results/physical-interface/active-defects) {
+                <tr> {
+                  <td colspan="20"> {
+                    expr "   Active defects : ";
+                    for-each ($results/physical-interface/active-defects/interface-alarms/*) {
+                      if ( name(.)  == "alarm-not-present") {
+                        expr "None ";
+                      }
+                      else if ( name(.) == "ethernet-alarm-link-down") {
+                        expr "LINK ";
+                      }
+                      else {
+                        expr name() _ " ";
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } /* end of table */
+
+        }
+      }
+    }
+  }
+}
+
+
+
+/* function to return a full url */
+<func:function name="jspace:server">
+{
+    param $server;
+    param $uri;
+    var $url = "http://" _ $server _ $uri;
+    <func:result select="string( $url )">;
+}
+
+
+template rpc_failure($rpc, $message = "Following errors occurred while trying to gather data: ") {
+        <p> {
+                expr $message;
+        }
+        expr jcs:syslog("daemon.error", $message);
+        for-each ($rpc//xnm:error) {
+                expr jcs:syslog("daemon.error", message);
+                <p> {
+                        expr message;
+                }
+        }
+}

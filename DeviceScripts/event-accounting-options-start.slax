@@ -1,0 +1,309 @@
+version 1.0;   /* XML version not script version */
+
+/*
+ * Copyright (c) 2014, Juniper Networks, Inc.
+ * All rights reserved.
+ * Filename      : event-accounting-options-start.slax
+ * Author        : Andre Stiphout <andre@juniper.net>
+ * Platform      : MX TRIO
+ * Release       : Junos 12.3+
+ * Version       : 0.94
+ * Date          : 2014-07-16 21:00
+ * Description   : Detect mastership and adjust accounting-options
+ *
+ */
+
+/*
+ * The aim of the script is to detect mastership and subsequently update
+ * the accounting-options to be applied to the master RE only; on the
+ * backup RE any accounting-options files that have content will be 
+ * moved to /var/log/rpm_files_not_transferred
+ *
+ * The syslog event will be a parameter parsed to the script.
+ * There are no version dependencies.
+ *
+ *  v0.90   Initial release.
+ *  v0.91   Added initial sleep to support staggered start for backup RE
+ *  v0.92   Removed sleep.
+ *  v0.93   Added rollback just before commit.
+ *  v0.94   Changed the copy on the backup RE assuming 14.1X55, with a single file in /var/log/rpm_files_not_transferred/
+ */
+
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns ext = "http://xmlsoft.org/XSLT/namespace";
+ns date = "http://exslt.org/dates-and-times";
+
+import "../import/junos.xsl";
+
+/* This is imported into the Junos CLI help text */
+var $arguments = {
+    <argument> {
+        <name> "syslogEvent";
+        <description> "Syslog message that trigges the policy";
+    }
+}
+
+param $syslogEvent;
+
+/* returns a connection handle that is used to execute RPCs, used for entire script */
+var $mgd = jcs:open();
+
+match / {
+
+    <event-script-results> {
+
+        /* abort if no connection to local $mgd */
+        if ( $mgd/..//xnm:error ) {
+            call rpcFailure( $rpc = $mgd/.., $message = $script _ ": error connecting on mgd on this RE" );
+            <xsl:message terminate="yes"> ;
+        }
+
+        var $hostname = $junos-context/hostname;
+
+        var $pattern = "( )";
+        var $subStrings = jcs:split( $pattern, $syslogEvent );
+
+        /* the total number of substrings split by the delimiter is counted the last substring represents the mastership */
+        var $mastership = $subStrings[ count( $subStrings ) ];
+
+        /* if value is 0x1, RE is master, if value is 0x0, RE is backup */
+        if ( $mastership == "0x1"  ) {
+
+            /* get the current configuration of the bulkstats group */
+
+            var $getConfigurationGroup = <get-configuration database="committed"> {
+                <configuration> {
+                    <groups> {
+                        <name> "bulkstats";
+                        <when> {
+                            <routing-engine>;
+                        }
+                    }
+                }
+            }
+            var $configurationGroup = jcs:execute( $mgd, $getConfigurationGroup );
+
+            if ( $configurationGroup/..//xnm:error ) {
+                call rpcFailure( $rpc = $configurationGroup/.., $message = $script _ ": error gathering configuration for group bulkstats" );
+            }
+
+            /* match the bulkstats RE configuration against the RE id, on match do nothing */
+            if ( $configurationGroup/groups/when/routing-engine == $junos-context/routing-engine-name ) {
+
+                expr jcs:syslog( "daemon.notice", $script _ ": no change to accounting-options necessary" );
+
+            }
+            /* check that a correct value is returned before making a change */
+            else if (( $junos-context/routing-engine-name == "re0" ) or ( $junos-context/routing-engine-name == "re1" )) {
+
+                /* activate the accounting-options for the master RE */
+                var $activateBulkstats = {
+                    <configuration> {
+                        <groups> {
+                            <name> "bulkstats";
+                            <when> {
+                                <routing-engine> $junos-context/routing-engine-name;
+                            }
+                        }
+                    }
+                }
+                call updateConfiguration( $xml = $activateBulkstats );
+
+            }
+            /* no correct value has been returned, error and exit */
+            else {
+
+                expr jcs:syslog( "daemon.error", $script _ ": identity crisis: unable to update accounting options" );
+
+            }
+        }
+
+        /* on backup RE, detect unclosed files with content and add these to file in backup directory rpm_files_not_transferred */
+        else if ( $mastership == "0x0"  ) {
+
+            /* on backup RE, files might be closed by accounting-options: wait for 35s */
+            expr jcs:sleep( 35 );
+
+             /* list of files to inspect */
+            var $fileList := {
+                <name> "reStats";
+                <name> "ifStats";
+                <name> "mibStatIfOids";
+                <name> "rpcStatIgmpIfls";
+                <name> "rpcStatPimIfls";
+                <name> "rpcStatMcastIfls";
+                <name> "rpcStatMcastJoins";
+                <name> "rpcStatMcastRoutes";
+                <name> "rpcStatMcastUsage";
+            }
+
+            for-each ( $fileList/name ) {
+
+                /* for each file copy all content  */
+                call copyFileContent( $fileName =  . );
+
+            }
+        }
+        else {
+            expr jcs:syslog( "daemon.error", $script _ ": unclear mastership" );
+        }
+    }
+
+    /* closes the connection handle */
+    expr jcs:close( $mgd );
+}
+
+template updateConfiguration( $xml, $commitAttempt = 1 ) {
+
+    /* abort if no XML config provided */
+    if ( jcs:empty( $xml )) {
+        expr jcs:syslog( "daemon.error", $script _ ": error: xml to apply is missing" );
+        <xsl:message terminate="yes">;
+    }
+
+    /* the commit-option force-synce will forcefully commit on both REs, log is always useful */
+    var $commitOptions := {
+        <commit-options> {
+            <force-synchronize>;
+            <log> "Event-script commit due to " _ $script _ " updating accounting-options.";
+        }
+    }
+
+    /* Discard any changes made by other users; configuration is not locked,
+       there is a chance that users apply a configuration between this RPC
+       and the subsequent actual commit, but with multiple attemps this
+       is highly likely to succeed; possible errors are unlikely and not checked;
+       unfortunately we cannot sent a message to all users about the rollback.
+    */
+    var $rollbackNull = <load-configuration rollback="0">;
+    var $rollbackResult := jcs:execute( $mgd, $rollbackNull );
+
+    /* apply new MIB profile */
+    var $applyConfig := { call jcs:load-configuration( $connection = $mgd, $configuration = $xml, $action = "replace", $commit-options = $commitOptions ); }
+
+    if ( $applyConfig//xnm:error ) {
+        expr jcs:syslog( "daemon.error", $script _ ": error: failure to apply accounting-options configuration at attempt " _ $commitAttempt _ " of 3." );
+
+        if ( $commitAttempt < 3 ) {
+        
+            /* between commits we wait 10s, possible the condition that prevents the commit, clears */
+            expr jcs:sleep( 10 );
+            
+            call updateConfiguration( $xml, $commitAttempt = $commitAttempt + 1 );
+        }
+    } else {
+        /* all being well log successful run of script */
+        expr jcs:syslog( "daemon.notice", $script _ ": accounting-options applied to master RE" );
+    }
+}
+
+template copyFileContent( $fileName ) {
+
+    /* abort if no fileName provided */
+    if ( jcs:empty( $fileName )) {
+        expr jcs:syslog( "daemon.error", $script _ ": no fileName passed to copyFileContent()" );
+        <xsl:message terminate="yes">;
+    }
+
+    /* location of files to inspect */
+    var $logDir = "/var/log/";
+
+    /* location of files to save */
+    var $storeDir = "/var/log/rpm_files_not_transferred/";
+
+    /* retrieve the accounting-file data including headers */
+    var $fileGetAccountingFile = {
+        <file-get> {
+            <filename> $logDir _ $fileName;
+            <encoding> "ascii";
+        }
+    }
+    var $fileContentAccountingFile = jcs:execute( $mgd, $fileGetAccountingFile );
+
+    /* verify that the read was successfull, if not error, otherwise continue */
+    if ( $fileContentAccountingFile/..//xnm:error ) {
+
+        call rpcFailure( $rpc = $fileContentAccountingFile/.., $message = $script _ ": error on reading accounting-file " _ . _ " on backup RE.");
+
+    } else {
+
+        /* retrieve the accounting-file data including headers in directory /var/log/rpm_files_not_transferred */
+        var $fileGetStoredFile = {
+            <file-get> {
+                <filename> $storeDir _ $fileName;
+                <encoding> "ascii";
+            }
+        }
+        var $fileContentStoredFile = jcs:execute( $mgd, $fileGetStoredFile );
+
+        /* verify that the read was successfull, if not just copy the file, otherwise add the contents */
+        /* note that the copy is not followed by a logrotate action: when the RE becomes master the file is logrotated automatically */
+        if ( $fileContentStoredFile/..//xnm:error ) {
+
+            var $filePutStoredFile = {
+                <file-put> {
+                    <filename> $storeDir _ $fileName;
+                    <encoding> "ascii";
+                    <permission> "0644";
+                    <delete-if-exist>;
+                    <file-contents> $fileContentAccountingFile/file-contents;
+                }
+            }
+
+            var $filePut = jcs:execute( $mgd, $filePutStoredFile );
+
+            if ( $filePut/..//xnm:error ) {
+
+                call rpcFailure( $rpc = $filePut/.., $message = $script _ ": error on writing accounting-file " _ . _ " on backup RE.");
+
+                expr jcs:syslog( "daemon.error", $script _ ": unclosed accounting-file " _ . _ " on backup RE: copied content failed to " _ $storeDir );
+
+            } else {
+
+                expr jcs:syslog( "daemon.notice", $script _ ": unclosed accounting-file " _ . _ " on backup RE: copied content complete to " _ $storeDir );
+
+            }
+
+        }
+        /* the two files are merged and overwritten in /var/log/rpm_files_not_transferred */
+        /* note that the copy is not followed by a logrotate action: when the RE becomes master the file is logrotated automatically */
+        else {
+
+            var $filePutStoredFile = {
+                <file-put> {
+                    <filename> $storeDir _ $fileName;
+                    <encoding> "ascii";
+                    <permission> "0644";
+                    <delete-if-exist>;
+                    <file-contents> $fileContentStoredFile/file-contents _ $fileContentAccountingFile/file-contents;
+                }
+            }
+
+            var $filePut = jcs:execute( $mgd, $filePutStoredFile );
+
+            if ( $filePut/..//xnm:error ) {
+
+                call rpcFailure( $rpc = $filePut/.., $message = $script _ ": error on writing accounting-file " _ . _ " on backup RE.");
+
+                expr jcs:syslog( "daemon.error", $script _ ": unclosed accounting-file " _ . _ " on backup RE: copied content failed to " _ $storeDir );
+
+            } else {
+
+                expr jcs:syslog( "daemon.notice", $script _ ": unclosed accounting-file " _ . _ " on backup RE: copied content complete to " _ $storeDir );
+
+            }
+        }
+    }
+}
+
+template rpcFailure( $rpc, $message = "Following errors occured while trying to gather data: " ) {
+
+    expr jcs:syslog( "daemon.error", $message );
+
+    for-each ( $rpc//xnm:error ) {
+        expr jcs:syslog( "daemon.error", message );
+    }
+}

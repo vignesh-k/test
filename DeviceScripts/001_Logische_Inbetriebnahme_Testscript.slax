@@ -1,0 +1,710 @@
+/* 
+Script to check status of a new BNG after discovering it with the EMS.
+Commands:
+show system storage:			get-system-storage
+show version:					get-software-information		(<product-name>, package-information[name="junos"]/comment
+show system memory:				get-system-memory-information	(<system-memory-summary-information>)
+show chassis hardware:			get-chassis-inventory
+show chassis routing-engine:	get-route-engine-information
+show chassis fan:				
+
+From Enrico:
+- show chassis alarms
+- show chassis fpc pic-status		get-pic-information
+- show ldp neighbor tetets asds f sdf sdf 
+- show ldp session
+- show isis adjacency
+- show bgp summary
+- show route summary test RK
+- show ntp associations
+
+*/
+
+/*
+	Author: bcersows
+	Version: 1.01
+	Date: 17.02.2014
+	Last Modified By: bcersows
+	###001_Logische_Inbetriebnahme_Testscript.slax;v1.01;2014.02.17
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns str = "http://exslt.org/strings";
+ns curl extension = "http://xml.libslax.org/curl";
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "Inbetriebnahme-Check" */
+/* @DESCRIPTION = "Listet Informationen über ein Device auf." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			/*if ( jcs:regex( "/device\\[name=\".*\"\\]/configuration/access/radius-server\\[name=\".*\"\\]", $CONTEXT ) ) {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\]/configuration/access/radius-server\\[name=\"(.*)\"\\]", $CONTEXT )[2];
+			} else {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\].*", $CONTEXT )[2];
+			}*/
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	
+	
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				copy-of bcersows:insertCompletionTest();
+				
+				copy-of bcersows:insertFloatingButton();
+				
+				copy-of bcersows:insertSoftwareInformation( $connection );
+				
+				set $results = jcs:execute( $connection, "get-system-memory-information" );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				<div> {
+					<p class="bold">{ 
+						expr "Speicher"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "berblick";
+					}
+					expr "Werte in KByte.";
+					<table class="twoColumnTable middle"> {
+						<tr> {
+							<td> { expr "Gesamt: "; }
+							<td> { expr $results/system-memory-summary-information/system-memory-total _ " (" _ $results/system-memory-summary-information/system-memory-total-percent _ ")"; }
+						}
+						<tr> {
+							<td> { expr "Reserviert: "; }
+							<td> { expr $results/system-memory-summary-information/system-memory-reserved _ " (" _ $results/system-memory-summary-information/system-memory-reserved-percent _ ")"; }
+						}
+						<tr> {
+							<td> { expr "Wired: "; }
+							<td> { expr $results/system-memory-summary-information/system-memory-wired _ " (" _ $results/system-memory-summary-information/system-memory-wired-percent _ ")"; }
+						}
+						<tr> {
+							<td> { expr "Aktiv: "; }
+							<td> { expr $results/system-memory-summary-information/system-memory-active _ " (" _ $results/system-memory-summary-information/system-memory-active-percent _ ")"; }
+						}
+						<tr> {
+							<td> { expr "Inaktiv: "; }
+							<td> { expr $results/system-memory-summary-information/system-memory-inactive _ " (" _ $results/system-memory-summary-information/system-memory-inactive-percent _ ")"; }
+						}
+						<tr> {
+							<td> { expr "Cache: "; }
+							<td> { expr $results/system-memory-summary-information/system-memory-cache _ " (" _ $results/system-memory-summary-information/system-memory-cache-percent _ ")"; }
+						}
+						<tr> {
+							<td> { expr "Frei: "; }
+							<td> { expr $results/system-memory-summary-information/system-memory-free _ " (" _ $results/system-memory-summary-information/system-memory-free-percent _ ")"; }
+						}
+					}
+					
+					set $results = jcs:execute( $connection, "get-system-storage" );
+					call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+					
+					<p class="bold hiddenButton" onclick="toggle(this, 1);"> {
+						expr "Speicherauslastung";
+						<span id="hiddenButton_1_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_1" class="hidden" style="display: none;"> {
+						<table class="wide" border="1"> {
+							<tr> {
+								<th> { expr "Name"; }
+								<th> { expr "Total"; }
+								<th> { expr "Benutzt"; }
+								<th> { expr "Verf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "gbar"; }
+								<th> { expr "Benutzt (%)"; }
+								<th> { expr "Mounted auf"; }
+							}
+							for-each ( $results/filesystem ) {
+								<tr> {
+									<td> { expr ./filesystem-name; }
+									<td> { expr ./total-blocks; }
+									<td> { expr ./used-blocks; }
+									<td> { expr ./available-blocks; }
+									if (./used-percent > 90) {
+										<td style="color: red;"> { expr ./used-percent; }
+									} else {
+										<td> { expr ./used-percent; }
+									}
+									<td> { expr ./mounted-on; }
+								}
+							}
+							/*expr $results;*/
+						}
+						copy-of bcersows:insertBackButton();
+					}
+				}
+					
+				set $results = jcs:execute( $connection, "get-chassis-inventory" );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				<div> {					
+					<p class="bold hiddenButton" onclick="toggle(this, 2);"> {
+						expr "Hardware";
+						<span id="hiddenButton_2_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_2" class="hidden" style="display: none;"> {
+						expr "Name: " _ $results/chassis/name _ "."; <br>{}
+						expr "Seriennummer: " _ $results/chassis/serial-number _ ".";
+					
+						<table class="wide" border="1"> {
+							<tr> {
+								<th> { expr "Name"; }
+								<th> { expr "Version"; }
+								<th> { expr "Teil-Nummer"; }
+								<th> { expr "Seriennummer"; }
+								<th> { expr "Beschreibung"; }
+								/*<th> { expr "CLEI-Code"; }*/
+								<th> { expr "Modell-Nummer"; }
+							}
+							for-each ( $results/chassis/chassis-module ) {
+								<tr> {
+									<td> { expr ./name; }
+									<td> { expr ./version; }
+									<td> { expr ./part-number; }
+									<td> { expr ./serial-number; }
+									<td> { expr ./description; }
+									/*<td> { expr ./clei-code; }*/
+									<td> { expr ./model-number; }
+								}
+								
+								for-each ( current()/chassis-sub-module ) {
+									<tr> {
+										<td style="padding-left: 2em;"> { expr ./name; }
+										<td> { expr ./version; }
+										<td> { expr ./part-number; }
+										<td> { expr ./serial-number; }
+										<td> { expr ./description; }
+										/*<td> { expr ./clei-code; }
+										<td> { expr ./model-number; }*/
+									}
+									
+									for-each ( current()/chassis-sub-sub-module ) {
+										<tr> {
+											<td style="padding-left: 4em;"> { expr ./name; }
+											<td> { expr ./version; }
+											<td> { expr ./part-number; }
+											<td> { expr ./serial-number; }
+											<td> { expr ./description; }
+											/*<td> { expr ./clei-code; }
+											<td> { expr ./model-number; }*/
+										}
+										
+										
+									}
+								}
+							}
+							/*expr $results;*/
+						}
+						copy-of bcersows:insertBackButton();
+					}
+				}
+				
+				set $results = jcs:execute( $connection, "get-route-engine-information" );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold hiddenButton" onclick="toggle(this, 3);"> {
+						expr "Routing Engines";
+						<span id="hiddenButton_3_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_3" class="hidden" style="display: none;"> {
+						for-each ( $results/route-engine ) {
+							<span class="italic"> { expr "Route Engine " _ ./slot; } <br> {}
+							expr "Status: " _ ./status _ "   ";
+							
+							if ( ./status == "OK" ) {
+								<div style="display: inline-block; width: 10px; height: 10px; background: green;"> { expr " "; }
+							} else {
+								<div style="display: inline-block; width: 10px; height: 10px; background: red;"> { expr " "; }
+							}
+							<br>{}
+							
+							<table class="twoColumnTable xwide" style="margin-left: 5px;"> {
+								<tr> {
+									<td> { expr "Mastership-State/-Priority: "; }
+									<td> { expr ./mastership-state _ " / " _ ./mastership-priority; }
+								}
+								<tr> {
+									<td> { expr "Temperatur gesamt / CPU: "; }
+									<td> { expr ./temperature _ "  /  " _ ./cpu-temperature; }
+								}
+								<tr> {
+									<td> { expr "Speicher DRAM-Gr"; <xsl:text disable-output-escaping="yes"> "&ouml;&szlig;"; expr "e / insgesamt: "; }
+									<td> { expr ./memory-dram-size _ " / " _ ./memory-installed-size; }
+								}
+								<tr> {
+									<td> { expr "Speicher Buffer-Ausnutzung: "; }
+									<td> { expr ./memory-buffer-utilization; }
+								}
+								<tr> {
+									<td> { expr "CPU Benutzer / Hintergrund / System / interrupt / Leerlauf: "; }
+									<td> { expr ./cpu-user _ " / " _ ./cpu-background _ " / " _ ./cpu-system _ " / " _ ./cpu-interrupt _ " / " _ ./cpu-idle; }
+								}
+								<tr> {
+									<td> { expr "Modell: "; }
+									<td> { expr ./model; }
+								}
+								<tr> {
+									<td> { expr "Seriennummer: "; }
+									<td> { expr ./serial-number; }
+								}
+								<tr> {
+									<td> { expr "Start-Zeit / in Betrieb: "; }
+									<td> { expr ./start-time _ " / " _ ./up-time; }
+								}
+								<tr> {
+									<td> { expr "Letzter Reboot durch: "; }
+									<td> { expr ./last-reboot-reason; }
+								}
+								<tr> {
+									<td> { expr "Load Average One / Five / Fifteen: "; }
+									<td> { expr ./load-average-one _ " / " _ ./load-average-five _ " / " _ ./load-average-fifteen; }
+								}
+							}	
+							if ( position() < last() ) {
+								<br> {}
+							}
+						}
+						copy-of bcersows:insertBackButton();
+					}
+				}
+				
+				set $results = jcs:execute( $connection, "get-alarm-information" );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold hiddenButton" onclick="toggle(this, 4);"> {
+						expr "Alarms";
+						<span id="hiddenButton_4_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_4" class="hidden" style="display: none;"> {
+						<p> {
+							if ( $results/alarm-summary/no-active-alarms ) {
+								expr "No alarms currently active.";
+							} else if( $results/alarm-summary/active-alarm-count ) {
+								expr $results/alarm-summary/active-alarm-count _ " alarms currently active.";
+							}
+						}
+						if ( $results/alarm-detail ) {	/* TODO */
+							<table class="xwide" border="1"> {
+								<tr> {
+									<th> { expr "Alarm Time"; }
+									<th> { expr "Class"; }
+									<th> { expr "Description"; }
+									<th> { expr "Type"; }
+								}
+								for-each ( $results/alarm-detail ) {
+									var $alarmType = {
+										if ( ./alarm-class == "Minor" ) {
+											expr "minorError";
+										} else if ( ./alarm-class == "Major" ) {
+											expr "majorError";
+										} else {
+											expr " ";
+										}
+									}
+									<tr> {
+										<td> { expr ./alarm-time; }
+										<td class="" _ $alarmType _ ""> { expr ./alarm-class; }
+										<td title="" _ ./alarm-description _ ""> { expr ./alarm-short-description; }
+										<td> { expr ./alarm-type; }
+									}
+								}
+							}
+						}
+						copy-of bcersows:insertBackButton();
+					}
+				}
+				
+				set $results = jcs:execute( $connection, "get-pic-information" );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold hiddenButton" onclick="toggle(this, 5);"> {
+						expr "PIC status";
+						<span id="hiddenButton_5_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_5" class="hidden" style="display: none;"> {
+						<p> {
+							if ( $results/fpc ) {
+							} else {
+								expr "No FPCs in system.";
+							} 
+						}
+						if ( $results/fpc ) {	
+							<table class="xwide" border="1"> {
+								<tr> {
+									<th> { expr "Name"; }
+									<th> { expr "Status"; }
+									<th> { expr "Description/Type"; }
+								}
+								for-each ( $results/fpc ) {
+									<tr> {
+										<td> { expr "Slot " _ ./slot; }
+										<td class="alignCenter"> { expr ./state; }
+										<td> { expr ./description; }
+									}
+									for-each ( ./pic ) {
+										<tr> {
+											<td style="padding-left: 2em;"> { expr "PIC " _ ./pic-slot; }
+											<td class="alignCenter"> { expr ./pic-state; }
+											<td> { expr ./pic-type; }
+										}
+									}
+								}
+							}
+						}
+						copy-of bcersows:insertBackButton();
+					}
+				}
+				
+				set $results = jcs:execute( $connection, "get-ldp-neighbor-information" );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold hiddenButton" onclick="toggle(this, 6);"> {
+						expr "LDP Neighbors";
+						<span id="hiddenButton_6_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_6" class="hidden" style="display: none;"> {
+						if ( $results/ldp-neighbor ) {
+							<table id="resultsTable" class="xwide" border="1"> {
+								<tr> {
+									<th> { expr "Address"; }
+									<th> { expr "Interface"; }
+									<th> { expr "Label Space ID"; }
+									<th> { expr "Hold Time"; }
+								}
+								for-each ( $results/ldp-neighbor ) {
+									<tr> {
+										<td> { expr ./ldp-neighbor-address; }
+										<td> { expr ./interface-name; }
+										<td> { expr ./ldp-label-space-id; }
+										<td> { expr ./ldp-remaining-time; }
+									}
+								}
+								/*expr $results;*/
+							}
+						} else {
+							<p> { expr "There are no neighbors at the moment."; }
+						}
+						copy-of bcersows:insertBackButton();
+					}
+				}
+				
+				set $results = jcs:execute( $connection, "get-ldp-session-information" );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold hiddenButton" onclick="toggle(this, 7);"> {
+						expr "LDP Sessions";
+						<span id="hiddenButton_7_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_7" class="hidden" style="display: none;"> {
+						if ( $results/ldp-session ) {
+							<table id="resultsTable" class="xwide" border="1"> {
+								<tr> {
+									<th> { expr "Address"; }
+									<th> { expr "State"; }
+									<th> { expr "Connection"; }
+									<th> { expr "Hold Time"; }
+									<th> { expr "Adv. Mode"; }
+								}
+								for-each ( $results/ldp-session ) {
+									<tr> {
+										<td> { expr ./ldp-neighbor-address; }
+										<td> { expr ./ldp-session-state; }
+										<td> { expr ./ldp-connection-state; }
+										<td> { expr ./ldp-remaining-time; }
+										<td> { expr ./ldp-session-adv-mode; }
+									}
+								}
+								/*expr $results;*/
+							}
+						} else {
+							<p> { expr "There are no sessions at the moment."; }
+						}
+						copy-of bcersows:insertBackButton();
+					}
+				}
+				
+				set $results = jcs:execute( $connection, "get-isis-adjacency-information" );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold hiddenButton" onclick="toggle(this, 8);"> {
+						expr "IS-IS Adjacency";
+						<span id="hiddenButton_8_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_8" class="hidden" style="display: none;"> {
+						if ( $results/isis-adjacency ) {
+							<table id="resultsTable" class="xwide" border="1"> {
+								<tr> {
+									<th> { expr "IF Name"; }
+									<th> { expr "System Name"; }
+									<th> { expr "Level"; }
+									<th> { expr "Adjacency State"; }
+									<th> { expr "Hold Time"; }
+									<th> { expr "SNPA"; }
+								}
+								for-each ( $results/isis-adjacency ) {
+									<tr> {
+										<td> { expr ./interface-name; }
+										<td> { expr ./system-name; }
+										<td> { expr ./level; }
+										<td> { expr ./adjacency-state; }
+										<td> { expr ./holdtime; }
+										<td> { expr ./snpa; }
+									}
+								}
+								/*expr $results;*/
+							}
+						} else {
+							<p> { expr "There are no neighbors at the moment."; }
+						}
+						copy-of bcersows:insertBackButton();
+					}
+				}
+				
+				set $results = jcs:execute( $connection, "get-bgp-summary-information" );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold hiddenButton" onclick="toggle(this, 9);"> {
+						expr "BGP Summary";
+						<span id="hiddenButton_9_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_9" class="hidden" style="display: none;"> {
+						<table class="twoColumnTable middle"> {
+							<tr> {
+								<td> { expr "Group Count: "; }
+								<td> { expr $results/group-count; }
+							}
+							<tr> {
+								<td> { expr "Peer Count:"; }
+								<td> { expr $results/peer-count; }
+							}
+							<tr> {
+								<td> { expr "Down Peer Count:"; }
+								<td> { expr $results/down-peer-count; }
+							}
+						}				
+						if ( $results/bgp-rib ) {
+							<table class="xwide" border="1"> {
+								<tr> {
+									<th> { expr "Name"; }
+									<th> { expr "Tot Paths"; }
+									<th> { expr "Act Paths"; }
+									<th> { expr "Suppressed"; }
+									<th> { expr "History"; }
+									<th> { expr "Damp State"; }
+									<th> { expr "Pending"; }
+									<th> { expr "State BGP/VPN"; }
+								}
+								for-each ( $results/bgp-rib ) {
+									<tr> {
+										<td> { expr ./name; }
+										<td> { expr ./total-prefix-count; }
+										<td> { expr ./active-prefix-count; }
+										<td> { expr ./suppressed-prefix-count; }
+										<td> { expr ./history-prefix-count; }
+										<td> { expr ./damped-prefix-count; }
+										<td> { expr ./pending-prefix-count; }
+										<td> { expr ./bgp-rib-state _ "/" _ ./vpn-rib-state; }
+									}
+								}
+								/*expr $results;*/
+							}
+						} else {
+							<p> { expr "No data to show."; }
+						}
+						<p> { expr "Peers:"; }
+						if ( $results/bgp-peer ) {
+							<table class="xwide" border="1"> {
+								<tr> {
+									<th> { expr "Peer"; }
+									<th> { expr " "; }
+									<th> { expr "AS"; }
+									<th> { expr "InPkt"; }
+									<th> { expr "OutPkt"; }
+									<th> { expr "OutQ"; }
+									<th> { expr "Flaps"; }
+									<th> { expr "Last Up/Down"; }
+									<th> { expr "State"; }
+								}
+								for-each ( $results/bgp-peer ) {
+									<tr> {
+										<td colspan="2"> { expr ./peer-address; }
+										<td> { expr ./peer-as; }
+										<td> { expr ./input-messages; }
+										<td> { expr ./output-messages; }
+										<td> { expr ./route-queue-count; }
+										<td> { expr ./flap-count; }
+										<td> { expr ./elapsed-time; }
+										<td> { expr ./peer-state; }
+									}
+									for-each ( ./bgp-rib ) {
+										<tr> {
+											<td class="lpadding15"> { expr ./name; }
+											<td title="Prefix Active/Rcvd/Accepted/Suppressed"> { expr ./active-prefix-count _ "/" _ ./received-prefix-count _ "/" _ ./accepted-prefix-count _ "/" _ ./suppressed-prefix-count; }
+										}
+									}
+								}
+								/*expr $results;*/
+							}
+						} else {
+							<p> { expr "No data to show."; }
+						}
+						copy-of bcersows:insertBackButton();
+					}
+				}
+				
+				set $results = jcs:execute( $connection, "get-route-summary-information" );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold hiddenButton" onclick="toggle(this, 10);"> {
+						expr "Route Summary";
+						<span id="hiddenButton_10_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_10" class="hidden" style="display: none;"> {
+						expr "Autonomous System Number: " _ $results/as-number _ "."; <br>{}
+						expr "Router ID: " _ $results/router-id _ ".";
+						if ( $results/route-table ) {
+							for-each ( $results/route-table ) {
+								<div> {
+									<span class="bold"> {
+										expr ./table-name _ ": " _ ./destination-count _ " destinations;";
+										expr ./total-route-count _ " routes (" _ ./active-route-count _ " active, ";
+										expr ./holddown-route-count _ " holddown, " _ ./hidden-route-count _ " hidden)";
+									}
+									if ( ./protocols ) {
+										<table class="twoColumnTable middle"> {
+											<tr> {
+												<th> { expr "Protocol name"; }
+												<th> { expr "routes (active)"; }
+											}
+											for-each ( ./protocols ) {
+												<tr> {
+													<td class="alignRight"> { expr ./protocol-name; }
+													<td style="padding-left: 4em;"> { expr ./protocol-route-count _ " (" _ ./active-route-count _ ")"; }
+												}
+											}
+										}
+									}
+								}
+							}
+						} else {
+							<p> { expr "There are no routing tables at the moment."; }
+						}
+						copy-of bcersows:insertBackButton();
+					}
+				}
+				
+				var $rpc = { <command> "show ntp associations"; };
+				set $results = jcs:execute( $connection, $rpc );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold hiddenButton" onclick="toggle(this, 11);"> {
+						expr "NTP Associations";
+						<span id="hiddenButton_11_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_11" class="hidden" style="display: none;"> {
+						<div style="cursor: help;"> {
+							expr "Unfortunately JunOS prevents a prettier output.. This command is also the reason the whole Script takes that long."; <br>;
+							/*expr $results _ ""; <br>;*/
+						}
+						<div> {
+							var $temp = jcs:break-lines( $results );
+							<table class="xwide"> {
+								for-each ( $temp ) {
+									/*expr "-" _ . _ "-"; <br>;*/
+									if ( contains( ., " " ) ) {
+										var $innerTemp = str:split( ., " " );
+										<tr> {
+											for-each ( $innerTemp ) {
+												<td> { expr .; }
+											}
+										}
+									}
+								}
+							}
+						}
+						copy-of bcersows:insertBackButton();
+					}
+				}
+				
+				/*=========================================================================*/
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+				
+				/*set $configRpcs = <clear-aaa-statistics-table> { <accounting>; }
+				set $results = jcs:execute( $connection, $configRpcs );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );*/
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}

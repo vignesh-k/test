@@ -1,0 +1,371 @@
+version 1.0;   /* XML version not script version */
+
+/*
+ * Copyright (c) 2014, Juniper Networks, Inc.
+ * All rights reserved.
+ * Filename      : event-accounting-options-rpc-ifprofile-add.slax
+ * Author        : Andre Stiphout <andre@juniper.net>
+ * Platform      : MX TRIO
+ * Release       : Junos 12.3+
+ * Version       : 0.93
+ * Date          : 2014-08-06 14:00
+ * Description   : Obtain additional statistics for ifprofile interfaces and write into accounting-files
+ *
+ */
+
+/*
+ * The aim of the script is to avoid using mib-profiles and write accounting-records in a similar
+ * fashion: walk all interfaces with an accounting-profile configured and if they are not down
+ * record statistics from "show interfaces extensive" and write to accounting-file.
+ * The interfaces that are down are not handled as it would try to provide statistics that are
+ * neither provided by the interface-profile natively.
+ * Some statistics are hard to derive from "show interfaces extensive", such as ifHighSpeed,
+ * ifOperStatus and IfAdminStatus; ifLastChange is not available at all:
+ * instead snmp is used to retrieve the OID values using a regular RPC.
+ * The script will continue even if the snmp-polling fails.
+ *
+ * No parameters will be passed to the script.
+ * There are no version dependencies.
+ *
+ *  v0.90   Initial release.
+ *  v0.91   Added check to handle configured interfaces with absent hardware.
+ *  v0.92   Added+removed translation from space to underscore for multicast route uptime.
+ *  v0.93   Removed translation from space to underscore for multicast route uptime.
+ */
+
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns ext = "http://xmlsoft.org/XSLT/namespace";
+ 
+import "../import/junos.xsl";
+
+/* returns a connection handle that is used to execute RPCs, used for entire script */
+var $mgd = jcs:open();
+
+match / {
+
+    <event-script-results> {
+
+        /* abort if no connection to local $mgd */
+        if ( $mgd/..//xnm:error ) {
+            call rpcFailure( $rpc = $mgd/.., $message = $script _ ": error connecting on mgd on this RE" );
+            <xsl:message terminate="yes"> ;
+        }
+
+        /* check current RE is master RE. Stop execution if not */
+        var $reStatus = { call checkMaster(); }
+
+        if ( $reStatus != "master" ) {
+            expr jcs:syslog( "daemon.error", $script _ ": script not running on master RE. Stopping execution" );
+            <xsl:message terminate="yes">;
+        }
+
+        /* retrieve interface state */
+        var $getIfls = <get-interface-information> {
+            <extensive>;
+        }
+        var $ifls = jcs:execute( $mgd, $getIfls );
+
+        if ( $ifls/..//xnm:error ) {
+            call rpcFailure( $rpc = $ifls/.., $message = $script _ ": error gathering interface information" );
+            <xsl:message terminate="yes"> ;
+        }
+
+        /* retrieve interface configuration */
+        var $getIfConfig = <get-configuration database="committed" inherit="inherit"> {
+            <configuration> {
+                <interfaces>;
+            }
+        }
+        var $ifConfig = jcs:execute( $mgd, $getIfConfig );
+
+        if ( $ifConfig/..//xnm:error ) {
+            call rpcFailure( $rpc = $ifConfig/.., $message = $script _ ": error gathering interface configuration" );
+            <xsl:message terminate="yes"> ;
+        }
+
+        /* iterate through all ifds */
+        for-each ( $ifConfig/interfaces/interface ) {
+
+            /* only process interfaces that have an accounting-profile */
+            if ( not ( jcs:empty ( accounting-profile ))) {
+
+                var $ifName = name;
+
+                var $ifIndex = $ifls/physical-interface[ name == $ifName ]/snmp-index;
+
+                /* when a non-existent interface is configured, it goes undetected, so we check if ifIndex exists */
+                if ( not( jcs:empty( $ifIndex ))) {
+
+                    /* retrieve the interface admin-status using SNMP, easier then trying to translate from "interface extensive" */
+                    var $getAdminStatus = <get-snmp-object> {
+                        <snmp-object-name> "ifAdminStatus." _ $ifls/physical-interface[ name == $ifName ]/snmp-index;
+                    }
+                    var $adminStatus = jcs:execute( $mgd, $getAdminStatus );
+
+                    if ( $adminStatus/..//xnm:error ) {
+                        call rpcFailure( $rpc = $adminStatus/.., $message = $script _ ": error getting snmp info: ifAdminStatus " );
+                    }
+
+                    /* retrieve the interface oper-status using SNMP, easier then trying to translate from "interface extensive" */
+                    var $getOperStatus = <get-snmp-object> {
+                        <snmp-object-name> "ifOperStatus." _ $ifls/physical-interface[ name == $ifName ]/snmp-index;
+                    }
+                    var $operStatus = jcs:execute( $mgd, $getOperStatus );
+
+                    if ( $operStatus/..//xnm:error ) {
+                        call rpcFailure( $rpc = $operStatus/.., $message = $script _ ": error getting snmp info: ifOperStatus " );
+                    }
+
+                    /* retrieve the interface high-speed using SNMP, easier then trying to translate from "interface extensive" */
+                    var $getHighSpeed = <get-snmp-object> {
+                        <snmp-object-name> "ifHighSpeed." _ $ifls/physical-interface[ name == $ifName ]/snmp-index;
+                    }
+                    var $highSpeed = jcs:execute( $mgd, $getHighSpeed );
+
+                    if ( $highSpeed/..//xnm:error ) {
+                        call rpcFailure( $rpc = $highSpeed/.., $message = $script _ ": error getting snmp info: ifHighSpeed " );
+                    }
+
+                    /* retrieve the interface last-change using SNMP, impossible to retrieve from "interface extensive" */
+                    var $getLastChange = <get-snmp-object> {
+                        <snmp-object-name> "ifLastChange." _ $ifls/physical-interface[ name == $ifName ]/snmp-index;
+                    }
+                    var $lastChange = jcs:execute( $mgd, $getLastChange );
+
+                    if ( $lastChange/..//xnm:error ) {
+                        call rpcFailure( $rpc = $lastChange/.., $message = $script _ ": error getting snmp info: ifLastChange " );
+                    }
+
+                    /* Only query interfaces that are not down: these interfaces will match ifProfile reported interfaces */
+                    if ( jcs:empty( $ifls/physical-interface[ name == $ifName ]/if-config-flags/iff-hardware-down )) {
+
+                        /* create a node-set consisting of 2 elements, ifIndex for snmp-index and if with all data as children */
+                        var $ifdName := {
+                            <ifIndex> $ifIndex;
+                            <if> {
+                                <ifDescr> name;
+                                <ifAlias> $ifls/physical-interface[ name == $ifName ]/description;
+                                <ifAdminStatus> $adminStatus/snmp-object/object-value;
+                                <ifOperStatus> $operStatus/snmp-object/object-value;
+                                <ifMtu> $ifls/physical-interface[ name == $ifName ]/mtu;
+
+                                /* use the current physical address, not the burned-in address: replace colons with spaces */
+                                <ifPhysAddress> translate( $ifls/physical-interface[ name == $ifName ]/current-physical-address, ":", " " );
+
+                                /* speed is reported in mbps upton 1Gbps or gbps above; unspecified for irb */
+                                <ifHighSpeed> $highSpeed/snmp-object/object-value;
+
+                                /* cannot be derived from interface extensive, not equal to interface-flapped */
+                                <ifLastChange> $lastChange/snmp-object/object-value;
+
+                                /* L3 incompletes are only available for physical interfaces */
+                                if ( starts-with( name, 'ae' ) or starts-with( name, 'irb' )) {
+                                    <ifJnxInL3Incompletes> 0;
+                                } else {
+                                    <ifJnxInL3Incompletes> $ifls/physical-interface[ name == $ifName ]/input-error-list/input-l3-incompletes;
+                                }
+
+                                <ifJnxCarrierTrans> $ifls/physical-interface[ name == $ifName ]/output-error-list/carrier-transitions;
+
+                                 /* Sum of input-drops + input-discard */
+                                <ifInDiscards> format-number( $ifls/physical-interface[ name == $ifName ]/input-error-list/input-drops + $ifls/physical-interface[ name == $ifName ]/input-error-list/input-discards, "#" );
+                                /* Sum of output-drops */
+                                <ifOutDiscards> $ifls/physical-interface[ name == $ifName ]/output-error-list/output-drops;
+
+                                /* ethernet sublayer statistics are only available for physical interfaces */
+                                if ( starts-with( name, 'ae' ) or starts-with( name, 'irb' )) {
+                                    <ifHCInBroadcastPkts> 0;
+                                    <ifHCOutBroadcastPkts> 0;
+                                } else {
+                                    <ifHCInBroadcastPkts> $ifls/physical-interface[ name == $ifName ]/ethernet-mac-statistics/input-broadcasts;
+                                    <ifHCOutBroadcastPkts> $ifls/physical-interface[ name == $ifName ]/ethernet-mac-statistics/output-broadcasts;
+                                }
+                            }
+                        }
+
+                        /* call template to write accounting-records, with the created node-set as a parameter */
+                        call createRpcIfProfile( $ifName = $ifdName );
+                    }
+                }
+            }
+        }
+
+        /* iterate through all ifls */
+        for-each ( $ifConfig/interfaces/interface/unit ) {
+
+            /* only process interfaces that have an accounting-profile */
+            if ( not ( jcs:empty ( accounting-profile ))) {
+
+                var $ifdName = ancestor::interface/name;
+                var $ifName = ancestor::interface/name _ "." _ name;
+                var $ifIndex = $ifls/physical-interface/logical-interface[ name == $ifName ]/snmp-index;
+
+                /* when a non-existent interface is configured, it goes undetected, so we check if ifIndex exists */
+                if ( not( jcs:empty( $ifIndex ))) {
+
+                    /* retrieve the interface admin-status using SNMP, easier then trying to translate from "interface extensive" */
+                    var $getAdminStatus = <get-snmp-object> {
+                        <snmp-object-name> "ifAdminStatus." _ $ifls/physical-interface/logical-interface[ name == $ifName ]/snmp-index;
+                    }
+                    var $adminStatus = jcs:execute( $mgd, $getAdminStatus );
+
+                    if ( $adminStatus/..//xnm:error ) {
+                        call rpcFailure( $rpc = $adminStatus/.., $message = $script _ ": error getting snmp info: ifAdminStatus " );
+                    }
+
+                    /* retrieve the interface oper-status using SNMP, easier then trying to translate from "interface extensive" */
+                    var $getOperStatus = <get-snmp-object> {
+                        <snmp-object-name> "ifOperStatus." _ $ifls/physical-interface/logical-interface[ name == $ifName ]/snmp-index;
+                    }
+                    var $operStatus = jcs:execute( $mgd, $getOperStatus );
+
+                    if ( $operStatus/..//xnm:error ) {
+                        call rpcFailure( $rpc = $operStatus/.., $message = $script _ ": error getting snmp info: ifOperStatus " );
+                    }
+
+                    /* Only query interfaces that are not down: these interfaces will match ifProfile reported interfaces */
+                    if ( jcs:empty( $ifls/physical-interface/logical-interface[ name == $ifName ]/if-config-flags/iff-hardware-down )) {
+
+                        /* create a node-set consisting of 2 elements, ifIndex for snmp-index and if with all data as children */
+                        var $iflName := {
+                            <ifIndex> $ifIndex;
+                            <if> {
+                                <ifDescr> $ifName;
+                                <ifAlias> $ifls/physical-interface[ name == $ifName ]/description;
+                                <ifAdminStatus> $adminStatus/snmp-object/object-value;
+                                <ifOperStatus> $operStatus/snmp-object/object-value;
+
+                                /* there is no MTU for logical interfaces, only for IFD and families; use the first family found */
+                                <ifMtu> $ifls/physical-interface/logical-interface[ name == $ifName ]/address-family/mtu;
+
+                                /* use the current physical address, not the burned-in address: replace colons with spaces */
+                                <ifPhysAddress> translate( $ifls/physical-interface[ name == $ifName ]/current-physical-address, ":", " " );
+
+                                /* THe following OIDs have no values for ifls */
+                                <ifHighSpeed> 0;
+                                <ifLastChange> 0;
+                                <ifJnxInL3Incompletes> 0;
+                                <ifJnxCarrierTrans> 0;
+                                <ifInDiscards> 0;
+                                <ifOutDiscards> 0;
+                                <ifHCInBroadcastPkts> 0;
+                                <ifHCOutBroadcastPkts> 0;
+                            }
+                        }
+
+                        /* call template to write accounting-records, with the created node-set as a parameter */
+                        call createRpcIfProfile( $ifName = $iflName );
+                    }
+                }
+            }
+        }
+    }
+
+    /* closes the connection handle */
+    expr jcs:close( $mgd );
+}
+
+template createRpcIfProfile( $ifName ) {
+
+    /* error if no ifName provided */
+    if ( jcs:empty( $ifName )) {
+        expr jcs:syslog( "daemon.error", $script _ ": no ifName passed to createRpcIfProfile()" );
+    }
+
+    /* assume there will be no failure on the RPC call */
+    mvar $rpcSuccess = true();
+
+    /* all children of $ifName/if can be written as separate accounting-record */
+    for-each ( $ifName/if/child::* ) {
+
+        /* create accounting-record for each child: name() is element node, dot is text node */
+        var $addAccountingRecord = <add-accounting-file-record> {
+            <file> "mibStatIfOids";
+            <layout> "mibProfileIfOids";
+            <fields> "name,object-value";
+            <data> 
+               name() _ ".ifIndex(" _ $ifName/ifIndex _ ")," _ . ;
+        }
+        var $accountingRecord = jcs:execute( $mgd, $addAccountingRecord );
+
+        if ( $accountingRecord/..//xnm:error ) {
+
+            call rpcFailure( $rpc = $accountingRecord/.., $message = $script _ ": error adding accounting record to file mibStatIfOids" );
+ 
+            expr jcs:syslog( "daemon.notice", $script _ ": " _ $addAccountingRecord );
+
+            /* record there is a failure on the RPC call */
+            set $rpcSuccess = false();
+        }
+    }
+
+    /* all being well log successful run of script */
+    if ( $rpcSuccess ) {
+        expr jcs:syslog( "daemon.notice", $script _ ": ifProfile statistics for interface " _ $ifName/if/ifDescr _ " using RPC updated successfully" );
+    } else {
+        expr jcs:syslog( "daemon.notice", $script _ ": ifProfile statistics for interface " _ $ifName/if/ifDescr _ " using RPC not updated successfully" );
+    }
+}
+
+
+template checkMaster() {
+
+    /* master-state is available natively when querying junos-context */
+    if ( $junos-context ) {
+        if ( $junos-context/re-master ) {
+          <output> "master";
+        }
+        else {
+           <output> "backup";
+        }
+    }
+    /* if not available, other means are used to determine mastership */
+    else {
+
+        var $getReInfo = <get-route-engine-information> ;
+        var $reInfo = jcs:execute( $mgd, $getReInfo );
+
+        if ( $reInfo/..//xnm:error ) {
+            call rpcFailure( $rpc = $reInfo/.., $message = $script _ ": error communicating to determine if master" );
+            <xsl:message terminate="yes"> ;
+        }
+
+        /* if there is only one RE then is has to be master */
+        if ( $reInfo/route-engine ) {
+            if ( count( $reInfo/route-engine ) == 1 ) {
+                <output> "master";
+            } else {
+
+                /* this command only works on master RE with MX chassis */
+                var $getChassisInfo = <get-chassis-inventory> ;
+                var $chassisInfo = jcs:execute( $mgd, $getChassisInfo );
+
+                if ($chassisInfo/..//xnm:error) { 
+                    call rpcFailure( $rpc = $reInfo/.., $message = $script _ ": error getting Chassis information." );
+                    <xsl:message terminate="yes"> ;
+                }
+
+                if ( $chassisInfo/chassis/serial-number ) {
+                    <output> "master";
+                } else {
+                    <output> "backup";
+                }
+            }
+        } else {
+            expr jcs:syslog( "daemon.error", $script _ ": ERROR, Unexpected response: " _ $reInfo );
+            <xsl:message terminate="yes">;
+        }
+    }
+}
+
+template rpcFailure( $rpc, $message = "Following errors occured while trying to gather data: " ) {
+
+    expr jcs:syslog( "daemon.error", $message );
+
+    for-each ( $rpc//xnm:error ) {
+        expr jcs:syslog( "daemon.error", message );
+    }
+}

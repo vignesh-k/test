@@ -1,0 +1,172 @@
+/* 
+	Removes all demux interfaces across multiple BNGs. Needed before update of dynamic-profile configuration.
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0b
+	Date: 18.11.2014
+	Last Modified By: bcersows
+	###Script_NE Configuration - Remove Demux Interfaces.slax;v1.0b;2014.11.18
+*/
+
+/*
+	Changelog:
+	----------
+	1.0; 25.08.2014: 
+		- First version.
+	1.0b; 18.11.2014:
+		- Improved output.
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns date = "http://exslt.org/dates-and-times";
+ns str = "http://exslt.org/strings";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "NE Configuration - Remove Demux Interfaces" */
+/* @DESCRIPTION = "Removes all demux interfaces across multiple BNGs. Needed before update of dynamic-profile configuration." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
+/* @VARIABLECONTEXT = "[]" */
+/* @PASSDEVICECREDENTIALS = "true" */
+/* @PROMOTEs = "yes" */
+/* @CONFIRMATION = "This will disconnect <i>any</i> subscriber.<br />Are you really sure about running this Script?" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	/*mvar $results;*/
+	
+	mvar $localtime = date:date-time();
+	
+	var $devices = bcersows:credentials();
+	var $myDevice = {
+		for-each ( $devices/device/host ) {
+			<xsl:sort>;
+			expr .;
+			if ( position() != last() ) {
+				expr ", ";
+			}
+		}
+	}
+	
+	/*var $myRPCGetInterfaces = <get-interface-information>;*/
+	var $myRPCGetInterfaces = <get-subscribers> {
+		<client-type> "vlan";
+	}
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				
+				copy-of bcersows:insertCompletionTest();
+				
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Removal Results"; }
+						/*copy-of bcersows:insertDownloadButton( "resultsTable", "SoftwareVersions" );*/
+					}
+					
+					<table id="resultsTable" class="wide"> {
+						<tr> {
+							<th style="text-align: left;"> "Device";
+							<th> "Interface";
+							<th> "Result";
+						}
+						for-each ( $devices/device ) {
+							<xsl:sort>;
+							var $connection = jcs:open( (target) , (user) , (passwd) );
+							var $deviceName = (host);
+							
+							if ( $connection && !$connection//self::xnm:error ) {
+								var $myResultInterfaces = jcs:execute( $connection, $myRPCGetInterfaces );
+								if( $myResultInterfaces//self::xnm:error ) {
+									<tr> {
+										<td> $deviceName;
+										<td> " ";
+										<td> "Error while receiving subscriber interfaces.";
+									}
+								} else {
+									if ( count( $myResultInterfaces/subscriber[ starts-with( interface, "demux" ) ] ) > 0 ) {
+										for-each ( $myResultInterfaces/subscriber[ starts-with( interface, "demux" ) ] ) {
+											var $interfaceName = ./interface;
+											<tr> {
+												<td> $deviceName;
+												<td> $interfaceName;
+												var $clearRPC = <clear-auto-configuration-interfaces> {
+													<interface-name> $interfaceName;
+												}
+												var $myResultInterfacesRemoval = jcs:execute( $connection, $clearRPC );
+												if( $myResultInterfaces//self::xnm:error ) {
+													<td class="majorError" title="" _ $myResultInterfaces//self::xnm:error> "Error!";
+												} else {
+													<td class="infoError"> "Success!";
+												}
+											}
+										}
+									} else {
+										<tr> {
+											<td> $deviceName;
+											<td> "No interfaces on device.";
+											<td> " ";
+										}
+									}
+								}
+							} else {
+								<tr> {
+									<td> $deviceName;
+									<td> " ";
+									<td class="majorError"> "Could not open connection.";
+								}
+							}
+							expr jcs:close( $connection );
+						}
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					<span class="left italic unselectable"> "vs. 1.0";
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+			}
+		}
+	}	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}

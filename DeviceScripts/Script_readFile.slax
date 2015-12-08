@@ -1,0 +1,385 @@
+/* 	Betrieb: Skript, das den Befehl "request support information" auf dem Gerät ausführt und als Datei auf einem externen Server ablegt. 
+	
+	sftp://conf-save@10.201.100.100:/home/conf-save/flatfile
+	cli: request support information
+	
+	sftp://10.101.201.7
+	/home/conf-save/scriptTests
+	root - radius
+	
+	file copy /var/log/cosd.log conf-save@10.201.100.100:/home/conf-save/
+	
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0
+	Date: 25.02.2014
+	Last Modified By: bcersows
+	###Script_readFile.slax;v1.0;2014.02.25
+*/
+
+/*
+	TODO: 
+
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns curl extension = "http://xml.libslax.org/curl";
+ns date = "http://exslt.org/dates-and-times";
+ns str = "http://exslt.org/strings";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device[matches(name, '\w{3}J\d{2,3}') or matches(name, '^(bng|BNG).*$')]" */
+/* @NAME = "Test read a file" */
+/* @DESCRIPTION = "Archives all files from '/var/log/' to remote server. Reads a file in, outputs. Writes output of 'get-support-information' to file on BNG/to remote file. Outputs 'show system core-dumps' and transfers every file of it to a remote server." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'Server','defaultvalue':'10.201.100.100'},{'name':'myFilename','defaultvalue':'/home/conf-save/scriptTests/output_file.tgz'},{'name':'username','defaultvalue':'conf-save'},{'name':'password','defaultvalue':''}]" */
+
+mvar $counter = 0;
+mvar $output = "";
+mvar $results;
+mvar $filename = "";
+mvar $contentToWrite = "";
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+	<argument> {
+		<name> "Server";
+		<description> "Remote server.";
+	}
+	<argument> {
+		<name> "myFilename";
+		<description> "Path and filename of output .tgz file.";
+	}
+	<argument> {
+		<name> "username";
+		<description> "User name on remote server.";
+	}
+	<argument> {
+		<name> "password";
+		<description> "Password for user on remote server.";
+	}
+}
+param $CONTEXT;
+param $Server;
+param $myFilename;
+param $username;
+param $password;
+
+match / {
+	<op-script-results> {
+		
+		mvar $localtime = date:date-time();
+	
+		var $myDevice = {
+			if ( false() ) {
+				expr $DEVICE;
+			} else {
+				/*if ( jcs:regex( "/device\\[name=\".*\"\\]/configuration/access/radius-server\\[name=\".*\"\\]", $CONTEXT ) ) {
+					expr jcs:regex( "/device\\[name=\"(.*)\"\\]/configuration/access/radius-server\\[name=\"(.*)\"\\]", $CONTEXT )[2];
+				} else {
+					expr jcs:regex( "/device\\[name=\"(.*)\"\\].*", $CONTEXT )[2];
+				}*/
+				expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+			}
+		}
+		
+		var $connection = jcs:open();
+		if ($connection/..//xnm:error) {
+			<error> "Error connecting on mgd on this RE";
+			<xsl:message terminate="yes"> ;
+		}
+		
+		<output> {
+			<HTML> {
+				<HEAD> {
+					<title> "Informationen ueber BNG " _ $myDevice _ ".";
+					copy-of bcersows:insertCSS();
+					copy-of bcersows:insertJS();
+				}
+				<BODY> {
+
+					<div class="header"> { <h4> { <a name="head"> { expr "Uebersicht ueber Device " _ $myDevice _ ". "; } } }
+					<div id="timeInformation"> {
+						expr "Datum: " _ format-number( date:day-in-month(), "00" ) _ " " _ date:month-abbreviation() _ " " _ date:year() _ ".";
+						<br> {}
+						expr "Zeit: " _ format-number( date:hour-in-day(), "00" ) _ ":" _ format-number( date:minute-in-hour(), "00" ) _ ":" _ format-number( date:second-in-minute(), "00" ) _ ".";
+					}
+					
+					if ( $connection ) { } else {	
+						<div class="error"> {
+							expr "Konnte keine Verbindung aufbauen."; <br>;
+							expr "Abbruch folgt.";
+						}
+					}
+
+					/*<div id="floatingButton" onclick="toggleAll(this);"> { 
+						expr "Alle oeffnen.";
+					}*/
+					
+					set $results = jcs:execute( $connection, "get-software-information" );
+					call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+					
+					<div> {
+						<p class="bold">{
+							expr "Versionsinformationen";
+						}
+						<table class="twoColumnTable middle"> {
+							<tr> {
+								<td> { expr "Geraetetyp: "; }
+								<td> { expr $results/product-name; }
+							}
+							<tr> {
+								<td> { expr "Version:"; }
+								<td> { expr $results/package-information[name="junos"]/comment; }
+							}
+						}
+					}
+					
+					mvar $myRpc;
+					set $myRpc = { <command> "file list /var/tmp/ detail"; };
+					set $results = jcs:execute( $connection, $myRpc );
+					<div> {
+						<h4> '1';
+						copy-of $results;
+					}
+					set $myRpc = { <command> "file list re0:/var/tmp/ detail"; };
+					set $results = jcs:execute( $connection, $myRpc );
+					<div> {
+						<h4> '2';
+						copy-of $results;
+					}
+					set $myRpc = { <command> "file list re1:/var/tmp/ detail"; };
+					set $results = jcs:execute( $connection, $myRpc );
+					<div> {
+						<h4> '3';
+						copy-of $results;
+					}
+					
+					/* Read file in and output it. */
+					set $filename = $myFilename;
+					
+					var $destinationPath = {
+						if ( $Server != "" ) {
+							/*expr "sftp://";*/
+							if ( $username != "" ) {
+								expr $username;
+								if ( $password ) {
+									expr ":" _ $password;
+								}
+								expr "@";
+							}
+							expr $Server _ ":";
+						}
+						expr $myFilename;
+						if ( contains( $myFilename, ".tgz") ) {} else {
+							expr ".tgz";
+						}
+					}
+					
+					var $read-rpc = {
+						<file-get> {
+							<filename> $filename;
+							<encoding> "ascii";
+						}
+					}
+					/*var $read-results = jcs:execute( $connection, $read-rpc );
+					expr $read-results/file-contents/text();*/
+					
+					set $results = jcs:execute( $connection, "get-support-information" );
+					call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+					
+					/*<p class="bold hiddenButton" onclick="toggle(this, 2);"> {
+						expr "Hardware";
+						<span id="hiddenButton_2_span" class="hiddenButtonSpan"> { expr ">"; }
+					}
+					<div id="hiddenDiv_2" class="hidden" style="display: none;"> {*/
+					<div> {
+						<p class="bold">{
+							expr "Support Information:";
+						}
+						expr "The whole output of the command 'request support information' can be opened via the button.";
+						
+						<p class="hiddenButton" onclick="toggle(this, 1);">{
+							expr "Show command response";
+							<span id="hiddenButton_1_span" class="hiddenButtonSpan"> { expr ">"; }
+						}
+						<div id="hiddenDiv_1" class="hidden data" style="display: none;"> {
+							for-each ( jcs:break-lines( $results ) ) {
+								expr .; <br>;
+							}	
+						}						
+						
+						copy-of bcersows:insertBackButton( true() );
+					}
+					
+					set $contentToWrite = str:replace( $results, "\n", "\r\n" );
+					set $filename = "0testOutput.txt";
+					var $createRemoteFile = false();	/* Controls if the file is created remotely or on local system. */
+					/* write file */
+					var  $write-rpc = <file-put> {
+						if ( $createRemoteFile ) {
+							<filename> "conf-save@10.201.100.100:/home/conf-save/scriptTests/" _ $filename;
+						} else {
+							<filename> $filename;
+						}
+						<permission> "644";
+						<encoding> "ascii";
+						<delete-if-exist>;
+						<file-contents> $contentToWrite;
+					}
+					set $results = jcs:execute( $connection, $write-rpc );
+					if ( $results//self::xnm:error ) {
+						for-each( $results//self::xnm:error ) {
+							<errors> message;
+						}
+					}
+					
+					<div> {
+						<p class="bold">{
+							expr "Results:";
+						}
+						
+						if ( $results//self::xnm:error ) {
+							expr "Errors :( ";
+						} else {
+							expr "I guess EI wrote the file.";
+						}
+						
+						copy-of bcersows:insertBackButton( true() );
+					}
+					
+					/* Outputs 'show system core-dumps' and transfers every file of it to a remote server. */
+					var $rpc = "get-system-core-dumps";
+					set $results = jcs:execute( $connection, $rpc );
+					call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+
+					/*<div> {
+						<p class="bold">{
+							expr "Core-Dumps";
+						}
+						mvar $copiedCount = 0;
+						<table class="xwide" border="1"> {
+							<tr> {
+								<th> { expr "Name"; }
+								<th> { expr "Owner"; }
+								<th> { expr "Group"; }
+								<th> { expr "Size (in MByte)"; }
+								<th> { expr "Date"; }
+								<th> { expr "Copied"; }
+							}
+							
+							for-each ( $results/directory/file-information ) {
+								var $realFileName = jcs:regex( ".* /(.+)", ./file-name )[2];
+								
+								<tr> {
+									<td title="" _ ./file-name> { expr $realFileName; }
+									<td style="text-align: center;"> { expr ./file-owner; }
+									<td style="text-align: center;"> { expr ./file-group; }
+									<td style="text-align: right;" title="" _ ./file-size _ " Byte"> { expr format-number( ./file-size div 1024 div 1024, "00###,###.000" ); }
+									<td style="text-align: right;" title="Unix Timestamp: " _ ./file-date _ ""> { expr ./file-date/@junos:format; }
+								*/
+									/*file copy /var/crash/vmcore.live.0 conf-save@10.201.100.100:/home/conf-save/scriptTests/ */
+									/*
+										space@BNGJMX4> ...e@10.201.100.100:/home/conf-save/scriptTests/
+										The authenticity of host '10.201.100.100 (10.201.100.100)' can't be established.
+										RSA key fingerprint is ac:5a:da:8e:42:33:d7:6c:81:ca:46:aa:f0:43:ac:94.
+										Are you sure you want to continue connecting (yes/no)?
+									*/
+									
+									/*expr "file copy " _ ./file-name _ " conf-save@10.201.100.100:/home/conf-save/scriptTests/   : "; <br>;*/
+									/*var $copyCmd = "file copy " _ ./file-name _ " conf-save@10.201.100.100:/home/conf-save/scriptTests/";*/
+								/*	var $copyCmd = {
+										<file-copy> {
+											<destination> "conf-save@10.201.100.100:/home/conf-save/scriptTests/" _ $realFileName;
+											<source> ./file-name;
+										}
+									}
+									var $copyResults = jcs:execute( $connection, $copyCmd );
+									if( $copyResults//self::xnm:error ) {
+										expr "Error while copying file " _ ./file-name _ ": "; <br>;
+										for-each ( $copyResults//self::xnm:error ) {
+											expr " - " _ .; <br>;
+										}
+										<td class="infoError" style="text-align: center;"> { expr "No"; }
+									} else {
+										set $copiedCount = $copiedCount + 1;
+										<td class="majorError" style="text-align: center;"> { expr "Yes"; }
+									}			
+								
+								}
+							}
+							*/
+							/*expr $results;*/
+					/*	}
+						expr "Copied " _ $copiedCount _ " of " _ count( $results/directory/file-information ) _ " dumps.";
+						
+						copy-of bcersows:insertBackButton( true() );
+					}*/
+					
+					var $duration = date:seconds() - date:seconds( $localtime );
+					<div class="wholeLine"> {
+						expr "Dauer der Ausfuehrung: " _ $duration _ "s. ";
+					}
+					
+					/*set $configRpcs = <clear-aaa-statistics-table> { <accounting>; }
+					set $results = jcs:execute( $connection, $configRpcs );
+					call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );*/
+					
+					/*<script disable-output-escaping="yes"> {
+						expr "OpenWindow = window.open('', 'newwin', 'height=250, width=250,toolbar=no');";
+						expr "OpenWindow.document.write('');";
+						expr "OpenWindow.document.write('<h1> { Title fhgoes here. }');";
+						expr "OpenWindow.document.write('');";
+					}*/
+					
+				}
+			}
+		}
+		
+		expr jcs:close( $connection );
+		/*<output> "------------------------------------------------";
+		<output> " ****  ****  **** End of script ****  ****  ****";
+		<output> "------------------------------------------------";*/
+		
+	}
+}
+
+template rpc_failure($rpc, $message = "Following errors occurred while trying to gather data: ") {
+	expr jcs:syslog("daemon.error", $message);
+	for-each ($rpc//xnm:error) {
+		expr jcs:syslog("daemon.error", message);
+	}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}
+
+/*
+
+	file archive compress source "/var/log/*" destination  file archive compress source /var/log/* destination conf-save@10.201.100.100:/home/conf-save/scriptsTests/BNG4_log.tgz
+
+		<file-archive>
+                <compress/>
+                <destination>conf-save@10.201.100.100:/home/conf-save/scriptsTest/BNG4_log.tgz</destination>
+                <source>"/var/log/*"</source>
+        </file-archive>
+
+*/

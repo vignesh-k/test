@@ -1,0 +1,243 @@
+/* 
+	Outputs information about the chassis clock modules.		
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0
+	Date: 30.04.2014
+	Last Modified By: bcersows
+	###Script_NE - Show Clock Modules.slax;v1.0;2014.04.30
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "NE - Show Clock Modules" */
+/* @DESCRIPTION = "Outputs information about the chassis clock modules." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				
+				copy-of bcersows:insertCompletionTest();
+				
+				if ( $connection ) { } else {	
+					<div class="error"> {
+						expr "Konnte keine Verbindung aufbauen."; <br>;
+						expr "Abbruch folgt.";
+					}
+				}	
+				
+				copy-of bcersows:insertSoftwareInformation( $connection );
+				
+				var $rpc = { <command> "show chassis synchronization clock-module routing-engine both"; };
+				set $results = jcs:execute( $connection, $rpc );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Clock Module Status"; }
+					}
+										
+					for-each ( $results/multi-routing-engine-item ) {
+						<div> {
+							<table class="twoColumnTable wide"> {
+								<tr> {
+									<th> ./re-name;
+									if ( ./re-name == "re0" && ./clock-synchronization-clock-module/clock-module-current-role != "master" ) {
+										<td style="color: RED;"> "RE0 is not master.";
+									}
+								}
+								<tr> {
+									<th class="lpadding5"> { expr "Clock Module Name"; }
+									<td> { expr ./clock-synchronization-clock-module/clock-module-name; }
+								}
+								<tr> {
+									<th class="lpadding5"> { expr "Current Role"; }
+									<td> { expr ./clock-synchronization-clock-module/clock-module-current-role; }
+								}
+								<tr> {
+									<th class="lpadding5"> { expr "Current State"; }
+									if ( ./clock-synchronization-clock-module/clock-module-current-state == "locked to external" ) {
+										<td> { expr ./clock-synchronization-clock-module/clock-module-current-state; }
+									} else {
+										<td style="color: RED;"> { expr ./clock-synchronization-clock-module/clock-module-current-state; }
+									}
+								}
+								<tr> {
+									<th class="lpadding15"> { expr "State for"; }
+									if ( ./clock-synchronization-clock-module/clock-module-state-for-time != "0" ) {
+										<td> { expr ./clock-synchronization-clock-module/clock-module-state-for-time; }
+									} else {
+										<td style="color: RED;"> { expr ./clock-synchronization-clock-module/clock-module-state-for-time; }
+									}
+								}
+								<tr> {
+									<th class="lpadding15"> { expr "State since"; }
+									<td> { expr ./clock-synchronization-clock-module/clock-module-state-since-date; }
+								}
+								<tr> {
+									<th class="lpadding5"> { expr "Monitored clock sources interface"; }
+									<td> { expr ./clock-synchronization-clock-module/clock-module-monitor-source-interface; }
+								}
+								if ( count( ./clock-synchronization-clock-module/clock-module-monitor-source-interface ) > 1 ) {
+									<p style="color: RED;"> "There is more than one monitored clock source on " _ ./re-name _ ". Only first one will be checked.";
+								}
+								<tr> {
+									<th class="lpadding5"> { expr "Monitored clock sources type"; }
+									if ( ./clock-synchronization-clock-module/clock-module-monitor-source-type == "2048khz" ) {
+										<td> { expr ./clock-synchronization-clock-module/clock-module-monitor-source-type; }
+									} else {
+										<td style="color: RED;"> { expr ./clock-synchronization-clock-module/clock-module-monitor-source-type; }
+									}
+								}
+								<tr> {
+									<th class="lpadding5"> { expr "Monitored clock sources status"; }
+									<td> { expr ./clock-synchronization-clock-module/clock-module-monitor-source-status; }
+								}
+							}
+						}
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					<span class="left italic unselectable"> "vs. 1.0";
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}
+
+/*
+	bng@BNGJMX3> request system zeroize | display xml
+	<rpc-reply xmlns:junos="http://xml.juniper.net/junos/14.1X50/junos">
+		<xnm:warning xmlns="http://xml.juniper.net/xnm/1.1/xnm" xmlns:xnm="http://xml.juniper.net/xnm/1.1/xnm">
+			<message>
+				System will be rebooted and may not boot without configuration
+			</message>
+		</xnm:warning>
+		<rpc>
+			<select-choice>
+				<choice-item>
+					<name>yes</name>
+					<help>Perform the operation</help>
+					<expandable/>
+				</choice-item>
+				<choice-item>
+					<name>no</name>
+					<help>Don't perform the operation</help>
+					<expandable/>
+				</choice-item>
+				<default>no</default>
+				<prompt>Erase all data, including configuration and log files? [yes, no] (no) </prompt>
+			</select-choice>
+		</rpc>
+	Erase all data, including configuration and log files? [yes,no] (no) yes
+
+		<xnm:warning xmlns="http://xml.juniper.net/xnm/1.1/xnm" xmlns:xnm="http://xml.juniper.net/xnm/1.1/xnm">
+			<message>
+				ipsec-key-management subsystem not running - not needed by configuration.
+			</message>
+			<reason>
+				<daemon>ipsec-key-management</daemon>
+				<process-not-configured/>
+			</reason>
+		</xnm:warning>
+		<multi-routing-engine-results>
+
+			<multi-routing-engine-item>
+
+				<re-name>re0</re-name>
+
+				<warning xmlns="http://xml.juniper.net/xnm/1.1/xnm" xmlns:xnm="http://xml.juniper.net/xnm/1.1/xnm">
+					<message>ipsec-key-management subsystem not running - not needed by configuration.</message>
+					<reason>
+						<daemon>ipsec-key-management</daemon>
+						<process-not-configured/>
+					</reason>
+				</warning>
+				<warning xmlns="http://xml.juniper.net/xnm/1.1/xnm" xmlns:xnm="http://xml.juniper.net/xnm/1.1/xnm">
+					<message>zeroizing re0</message>
+				</warning>
+			</multi-routing-engine-item>
+
+		</multi-routing-engine-results>
+		<xnm:warning xmlns="http://xml.juniper.net/xnm/1.1/xnm" xmlns:xnm="http://xml.juniper.net/xnm/1.1/xnm">
+			<message>
+				zeroizing re1
+			</message>
+		</xnm:warning>
+		<cli>
+			<banner>{master}</banner>
+		</cli>
+	</rpc-reply>
+*/

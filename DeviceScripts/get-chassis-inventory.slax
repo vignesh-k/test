@@ -1,0 +1,25 @@
+version 1.0;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns ext = "http://xmlsoft.org/XSLT/namespace";
+ns redirect extension  = "org.apache.xalan.xslt.extensions.Redirect"; /* needed for redirect command to work */
+
+import "../import/junos.xsl";
+
+match / {
+
+    <op-script-output> {
+
+    var $rpc-show-int = <get-chassis-inventory>;
+    
+    var $show-int = jcs:invoke($rpc-show-int);
+
+           expr jcs:output( $show-int);
+
+		   
+
+    }
+}
+

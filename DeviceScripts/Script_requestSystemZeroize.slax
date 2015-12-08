@@ -1,0 +1,194 @@
+/* 
+	Script to simulate the "request system zeroize" command.		
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0
+	Date: 19.03.2014
+	Last Modified By: bcersows
+	###Script_requestSystemZeroize.slax;v1.0;2014.03.19
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns curl extension = "http://xml.libslax.org/curl";
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "NE - System Zeroize" */
+/* @DESCRIPTION = "Completely resets a BNG." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+/* @CONFIRMATION = "This Script will completely delete a BNG and all of its contents. <br />Are you really (r e a l l y) sure to continue? <br />Please double-check that you are using the right node."  */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			/*if ( jcs:regex( "/device\\[name=\".*\"\\]/configuration/access/radius-server\\[name=\".*\"\\]", $CONTEXT ) ) {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\]/configuration/access/radius-server\\[name=\"(.*)\"\\]", $CONTEXT )[2];
+			} else {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\].*", $CONTEXT )[2];
+			}*/
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				
+				copy-of bcersows:insertCompletionTest();
+				
+				if ( $connection ) { } else {	
+					<div class="error"> {
+						expr "Konnte keine Verbindung aufbauen."; <br>;
+						expr "Abbruch folgt.";
+					}
+				}	
+				
+				copy-of bcersows:insertSoftwareInformation( $connection );
+				
+				var $rpc = "request-system-zeroize";
+				set $results = jcs:execute( $connection, $rpc );
+				call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+				
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Deletion Results"; }
+					}
+					
+					<p> {
+						copy-of $results;
+					}
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}
+
+/*
+	bng@BNGJMX3> request system zeroize | display xml
+	<rpc-reply xmlns:junos="http://xml.juniper.net/junos/14.1X50/junos">
+		<xnm:warning xmlns="http://xml.juniper.net/xnm/1.1/xnm" xmlns:xnm="http://xml.juniper.net/xnm/1.1/xnm">
+			<message>
+				System will be rebooted and may not boot without configuration
+			</message>
+		</xnm:warning>
+		<rpc>
+			<select-choice>
+				<choice-item>
+					<name>yes</name>
+					<help>Perform the operation</help>
+					<expandable/>
+				</choice-item>
+				<choice-item>
+					<name>no</name>
+					<help>Don't perform the operation</help>
+					<expandable/>
+				</choice-item>
+				<default>no</default>
+				<prompt>Erase all data, including configuration and log files? [yes, no] (no) </prompt>
+			</select-choice>
+		</rpc>
+	Erase all data, including configuration and log files? [yes,no] (no) yes
+
+		<xnm:warning xmlns="http://xml.juniper.net/xnm/1.1/xnm" xmlns:xnm="http://xml.juniper.net/xnm/1.1/xnm">
+			<message>
+				ipsec-key-management subsystem not running - not needed by configuration.
+			</message>
+			<reason>
+				<daemon>ipsec-key-management</daemon>
+				<process-not-configured/>
+			</reason>
+		</xnm:warning>
+		<multi-routing-engine-results>
+
+			<multi-routing-engine-item>
+
+				<re-name>re0</re-name>
+
+				<warning xmlns="http://xml.juniper.net/xnm/1.1/xnm" xmlns:xnm="http://xml.juniper.net/xnm/1.1/xnm">
+					<message>ipsec-key-management subsystem not running - not needed by configuration.</message>
+					<reason>
+						<daemon>ipsec-key-management</daemon>
+						<process-not-configured/>
+					</reason>
+				</warning>
+				<warning xmlns="http://xml.juniper.net/xnm/1.1/xnm" xmlns:xnm="http://xml.juniper.net/xnm/1.1/xnm">
+					<message>zeroizing re0</message>
+				</warning>
+			</multi-routing-engine-item>
+
+		</multi-routing-engine-results>
+		<xnm:warning xmlns="http://xml.juniper.net/xnm/1.1/xnm" xmlns:xnm="http://xml.juniper.net/xnm/1.1/xnm">
+			<message>
+				zeroizing re1
+			</message>
+		</xnm:warning>
+		<cli>
+			<banner>{master}</banner>
+		</cli>
+	</rpc-reply>
+*/

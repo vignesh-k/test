@@ -1,0 +1,159 @@
+/*
+	Script to show all configured apply-macros. At the moment supported are macros for
+		- DDOS.
+*/
+
+/* 
+	Author: bcersows
+	Version: 1.0
+	Date: 01.10.2014
+	Last Modified By: bcersows	
+	###Script_ICEAAA - Check Special Configuration.slax;v1.0;2014.10.01
+*/
+
+/*
+	Changelog:
+	----------
+	1.0; 01.10.2014: 
+		- Initial version.
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/iceaaa-manager/device" */
+/* @NAME = "ICEAAA - Check Special Configuration" */
+/* @DESCRIPTION = "Script to configure some parts for DDOS filters in ICEAAA manager." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPEs = "SINGLEEXECUTION" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				/*copy-of bcersows:insertJS();*/
+				
+				<style> {
+					expr ".header #head { width: auto !important; }";
+				}
+			}
+			<BODY> {
+				<div id="iCEAAAAll" style="color: black; background: white; heights: 95%; overflow-x: hidden;"> {
+					copy-of bcersows:insertHeaderBig( $myDevice );
+					/*copy-of bcersows:insertCompletionTest();*/
+					
+					if ( $connection ) { } else {	
+						<div class="error"> {
+							expr "Konnte keine Verbindung aufbauen."; <br>;
+							expr "Abbruch folgt.";
+						}
+					}	
+					
+					copy-of bcersows:insertSoftwareInformation( $connection );
+					
+					var $rpc = <get-configuration> {
+						<configuration> {
+							<groups> {
+								<name> "ngcoco-filter";
+								<apply-macro>;
+							}
+						}
+					}
+					set $results = jcs:execute( $connection, $rpc );
+					call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+					
+					<div> {
+						<p class="bold subheader">{
+							<span class="left"> { expr "NGCoco Filters"; }
+						}
+						if ( $results/groups/apply-macro[data/name="INCIDENT-ID"] ) {
+							<table id="resultsTable" class="xwide clearBoth"> {
+								<tr> {
+									<th> { expr "LineID"; }
+									<th> { expr "Service VLAN"; }
+									<th> { expr "Incident String"; }
+								}
+								for-each ( $results/groups/apply-macro[data/name="INCIDENT-ID"] ) {
+									var $applyName = str:split( ./name, "#" );
+									var $lineID = $applyName[2];
+									var $vlanID = $applyName[3];
+									<tr> {
+										<td> { expr $lineID; }
+										<td> { expr $vlanID; }
+										<td> { expr ./data[name="INCIDENT-ID"]/value; }
+									}
+								}
+							}
+						} else {
+							<p> { expr "There are no applied filter strings."; }
+						}
+						
+						/*<div onclick="alert('oh');"> {
+							expr "click";
+						}*/
+						
+						copy-of bcersows:insertBackButton();
+					}
+					
+					/*<br>;<br>;<br>;<br>;<br>;<br>;<br>;<br>;<br>;<br>;<br>;<br>;
+					expr "oh";*/
+					
+					var $duration = date:seconds() - date:seconds( $localtime );
+					<div class="wholeLine"> {
+						<span class="left italic unselectable"> "vs. 1.0";
+						expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+					}
+				}
+			}
+		}
+	}
+
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		<div class="error"> {
+			<span class="bold"> { expr $msg; } <br>;
+			for-each ( $resultsNodeSet//self::xnm:error ) {
+				expr .; <br>;
+			}
+		}
+	}
+}

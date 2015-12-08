@@ -1,0 +1,898 @@
+/*
+ * Filename      : Interface-View_Optical_Diag-local.slax
+ * Author        : Andrew Sharp asharp@juniper.net
+ * Platform      : Junos Space
+ * Release       : 13.1P2
+ * Version       : 1.0
+ * SVN INFO      :
+ *
+ * $Rev: 37212 $
+ * $Date: 2014-08-06 08:06:39 +0000 (Wed, 06 Aug 2014) $
+ * $Author: freimer $
+ * 
+ * Description   : Display Optical Diagnostics.
+ *
+ */
+
+version 1.1;
+
+/* Namespace declarations */
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns jspace = "http://jspace-utils/asharp@juniper.net";
+ns str = "http://exslt.org/strings";
+
+ns exsl extension = "http://exslt.org/common";
+
+/* Imports */
+import "../import/junos.xsl";
+import "lc-jspace-lib.slax";
+
+/* Junos Space specific context, name and description */
+/* @CONTEXT = "/device/interface-information/physical-interface[starts-with( name , "ge-" ) or starts-with( name , "xe-" )]" */
+/* @NAME = "View Optical Diagnostics" */
+/* @DESCRIPTION = "Display Optical Diagnostics." */
+/* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
+/* @ISLOCAL = "true" */
+/* @PASSDEVICECREDENTIALS = "true" */
+
+/* Global variables */
+var $scriptname = "Interface-View_Optical_Diag-local.slax";
+var $results;
+var $interfaces;
+var $interface-regex;
+var $devicename;
+var $physintname;
+var $splitCredentials; /* array of all credentials */
+var $splitCredential; /* array of one set of credentials */
+
+var $arguments = {
+  <argument> {
+    <name> "CONTEXT";
+    <description> "The context associated with this script.";
+  }
+}
+param $CONTEXT;
+
+match / {
+  <op-script-results> {
+    mvar $count = "0";    /*count of devices    */
+    mvar $host-compare;   /* used for comparing */
+
+    mvar $hostname;       /* credentials of user@ip           */
+    mvar $splitHostname;  /* array of user and ip credentials */
+    mvar $ip;             /* credentials ip address           */
+    mvar $user;           /* credentials username             */
+    mvar $password;       /* credentials password             */
+
+    /* Split interfaces and Credentials */
+    var $interfaces = jcs:split( "\\|", $CONTEXT );
+    var $splitCredentials = str:split( $credentials , "\\;" );
+
+    <output> {
+      <HTML> {
+        <HEAD> {
+          <title> "Interface Diagnostics";
+          copy-of jspace:html-style("6");
+        }
+        <BODY> {
+          /* Parse through all selected interfaces */
+          for-each ($interfaces) {
+            var $interface-regex = jcs:regex( "/device(\\[.*\\])/interface-information/physical-interface(\\[.*\\])", (.) );
+            var $devicename = str:replace(str:replace($interface-regex[2],"[name=\"",""),"\"]","");
+            var $physintname = str:replace(str:replace(str:replace($interface-regex[3],"[name=",""),"]",""),"\"","");
+
+            /* Remote Procedure Calls */
+            var $get-interface-optics-diagnostics-information-rpc = <get-interface-optics-diagnostics-information> {
+              <interface-name> $physintname;
+            }
+            var $show-interfaces-optics-vendor-extension-rpc = <show-interfaces-optics-vendor-extension> {
+              <interface-name> $physintname;
+            }
+
+            /* First time pass store the first devicename in $host-compare */
+            /* Increase the count of unique devices seen to 1              */
+            if ($count = "0") {
+              set $host-compare = $devicename;
+              set $count = $count + 1;
+            }
+
+            /* If the devicename is different from the previous loop  */
+            /* then we must be using a new device, increase the count */
+            /* and save the current devicename as the host to compare */
+            if ( $host-compare != $devicename ) {
+              set $count = $count + 1;
+              set $host-compare = $devicename;
+            }
+
+            /* Using the count of unique devices found, the correct connection */
+            /* parameters to be used can be derived from $splitCredentials     */
+            var $splitCredential = str:split( $splitCredentials[$count] , "\\:" );
+            set $hostname = $splitCredential[1];
+            set $password = $splitCredential[2];
+            set $splitHostname = str:split( $hostname[1] , "\@");
+            set $user = $splitHostname[1];
+            set $ip = $splitHostname[2];
+            var $connection = jcs:open( $ip , $user , $password );
+            /* abort if no connection to local mgd */
+            if ($connection/..//xnm:error) {
+            	call rpc_failure($rpc = $connection/.., $message = "Error connecting on mgd on this RE");
+            	<xsl:message terminate="yes"> ;
+						}
+            var $results = jcs:execute($connection , $get-interface-optics-diagnostics-information-rpc);
+            if ($results/..//xnm:error) {
+            	call rpc_failure($rpc = $results/.., $message = "Error collecting interface optics diagnostics information");
+            	<xsl:message terminate="yes"> ;
+						}
+            var $vendor-results = jcs:execute($connection , $show-interfaces-optics-vendor-extension-rpc);
+            if ($vendor-results/..//xnm:error) {
+            	call rpc_failure($rpc = $vendor-results/.., $message = "Error collecting interface optics vendor extension");
+            	<xsl:message terminate="yes"> ;
+						}
+            var $close-results = jcs:close ( $connection );
+            if ($close-results/..//xnm:error) {
+            	call rpc_failure($rpc = $close-results/.., $message = "Error closing connection.");
+            	<xsl:message terminate="yes"> ;
+						}
+
+            /* If no physical interface information returned then interface doesn't support the query */
+            if ( ( jcs:empty( $results/physical-interface ) ) 
+              or ( $results/physical-interface/optics-diagnostics/optic-diagnostics-not-available = "N/A" ) ) {
+              <p id="pheadererror"> {
+                expr "No interface-optics-diagnostics information is available for this selected interface " _ $devicename _ " : " _ $physintname;
+              }
+            }
+            /* Go through each valid result that doesnt contain N/A */
+            else {
+            	for-each ($results/physical-interface) {
+              	<p id="pheader"> {
+                	expr "Interface Optics Diagnostics for " _ $devicename _ " : " _  name;
+                }
+              	<table border="1"> {
+                	/* Setup the column width for a 2 column table */
+                	<colgroup> {
+                  	<col width="50%">;
+                  	<col width="50%">;
+                  }
+                	<tr> {
+                  	<td id="paddedcellright"> {
+                    	expr "Physical interface";
+                    }
+                  	<td id="paddedcellleft"> {
+                  		expr name;
+                  	}
+									}
+									if ( $vendor-results/physical-interface/optics-diagnostics-vendor-extension/optics-vendor-part-number ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Vendor part number";
+											}
+											<td id="paddedcellleft"> {
+												expr $vendor-results/physical-interface/optics-diagnostics-vendor-extension/optics-vendor-part-number;
+											}
+										}
+									}
+									if ( $vendor-results/physical-interface/optics-diagnostics-vendor-extension/optics-vendor-material-number ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Vendor material number";
+											}
+											<td id="paddedcellleft"> {
+												expr $vendor-results/physical-interface/optics-diagnostics-vendor-extension/optics-vendor-material-number;
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-bias-current ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser bias current";
+											}
+											if ( ( optics-diagnostics/laser-bias-current < optics-diagnostics/laser-bias-current-low-alarm-threshold ) 
+												or ( optics-diagnostics/laser-bias-current > optics-diagnostics/laser-bias-current-high-alarm-threshold ) ) {
+												<td id="cellwarningleft"> {
+													expr optics-diagnostics/laser-bias-current _ " mA";
+												}
+											}
+											else if ( ( optics-diagnostics/laser-bias-current < optics-diagnostics/laser-bias-current-low-warn-threshold ) 
+												or ( optics-diagnostics/laser-bias-current > optics-diagnostics/laser-bias-current-high-warn-threshold ) ) {
+												<td id="cellamberleft"> {
+													expr optics-diagnostics/laser-bias-current _ " mA";
+												}
+											}
+											else {
+												<td id="paddedcellleft"> {
+													expr optics-diagnostics/laser-bias-current _ " mA";
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-output-power or optics-diagnostics/laser-output-power-dbm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser output power";
+											}
+											if ( ( optics-diagnostics/laser-output-power-dbm < optics-diagnostics/laser-tx-power-low-alarm-threshold-dbm ) 
+												or ( optics-diagnostics/laser-output-power-dbm > optics-diagnostics/laser-tx-power-high-alarm-threshold-dbm ) 
+												or ( optics-diagnostics/laser-output-power < optics-diagnostics/laser-tx-power-low-alarm-threshold ) 
+												or ( optics-diagnostics/laser-output-power > optics-diagnostics/laser-tx-power-high-alarm-threshold ) ) {
+												<td id="cellwarningleft"> {
+													expr optics-diagnostics/laser-output-power _ " mW / " _ optics-diagnostics/laser-output-power-dbm _ " dBm";
+												}
+											}
+											else if ( ( optics-diagnostics/laser-output-power-dbm < optics-diagnostics/laser-tx-power-low-warn-threshold-dbm ) 
+												or ( optics-diagnostics/laser-output-power-dbm > optics-diagnostics/laser-tx-power-high-warn-threshold-dbm ) 
+												or ( optics-diagnostics/laser-output-power < optics-diagnostics/laser-tx-power-low-warn-threshold ) 
+												or ( optics-diagnostics/laser-output-power > optics-diagnostics/laser-tx-power-high-warn-threshold ) ) {
+												<td id="cellamberleft"> {
+													expr optics-diagnostics/laser-output-power _ " mW / " _ optics-diagnostics/laser-output-power-dbm _ " dBm";
+												}
+											}
+											else {
+												<td id="paddedcellleft"> {
+													expr optics-diagnostics/laser-output-power _ " mW / " _ optics-diagnostics/laser-output-power-dbm _ " dBm";
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/module-temperature ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module temperature";
+											}
+											if ( ( optics-diagnostics/module-temperature < optics-diagnostics/module-temperature-low-alarm-threshold ) 
+												or ( optics-diagnostics/module-temperature > optics-diagnostics/module-temperature-high-alarm-threshold ) ) {
+												<td id="cellwarningleft"> {
+													expr optics-diagnostics/module-temperature;
+												}
+											}
+											else if ( ( optics-diagnostics/module-temperature < optics-diagnostics/module-temperature-low-warn-threshold ) 
+												or ( optics-diagnostics/module-temperature > optics-diagnostics/module-temperature-high-warn-threshold ) ) {
+												<td id="cellamberleft"> {
+													expr optics-diagnostics/module-temperature;
+												}
+											}
+											else {
+												<td id="paddedcellleft"> {
+													expr optics-diagnostics/module-temperature;
+												}
+											}
+										}
+									}
+									if (optics-diagnostics/module-voltage) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module voltage";
+											}
+											if ( ( optics-diagnostics/module-voltage < optics-diagnostics/module-voltage-low-alarm-threshold ) 
+												or ( optics-diagnostics/module-voltage > optics-diagnostics/module-voltage-high-alarm-threshold ) ) {
+												<td id="cellwarningleft"> {
+													expr optics-diagnostics/module-voltage _ " V";
+												}
+											}
+											else if ( ( optics-diagnostics/module-voltage < optics-diagnostics/module-voltage-low-warn-threshold ) 
+												or ( optics-diagnostics/module-voltage > optics-diagnostics/module-voltage-high-warn-threshold ) ) {
+												<td id="cellamberleft"> {
+													expr optics-diagnostics/module-voltage _ " V";
+												}
+											}
+											else {
+												<td id="paddedcellleft"> {
+													expr optics-diagnostics/module-voltage _ " V";
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/rx-signal-avg-optical-power or optics-diagnostics/rx-signal-avg-optical-power-dbm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Receiver signal average optical power";
+											}
+											if ( ( optics-diagnostics/rx-signal-avg-optical-power-dbm < optics-diagnostics/laser-rx-power-low-alarm-threshold-dbm ) 
+												or ( optics-diagnostics/rx-signal-avg-optical-power-dbm > optics-diagnostics/laser-rx-power-high-alarm-threshold-dbm )
+												or ( optics-diagnostics/rx-signal-avg-optical-power < optics-diagnostics/laser-rx-power-low-alarm-threshold ) 
+												or ( optics-diagnostics/rx-signal-avg-optical-power > optics-diagnostics/laser-rx-power-high-alarm-threshold ) ) {
+												<td id="cellwarningleft"> {
+													expr optics-diagnostics/rx-signal-avg-optical-power _ " mW / " _ optics-diagnostics/rx-signal-avg-optical-power-dbm _ " dBm";
+												}
+											}
+											else if ( ( optics-diagnostics/rx-signal-avg-optical-power-dbm < optics-diagnostics/laser-rx-power-low-warn-threshold-dbm ) 
+												or ( optics-diagnostics/rx-signal-avg-optical-power-dbm > optics-diagnostics/laser-rx-power-high-warn-threshold-dbm )
+												or ( optics-diagnostics/rx-signal-avg-optical-power < optics-diagnostics/laser-rx-power-low-warn-threshold ) 
+												or ( optics-diagnostics/rx-signal-avg-optical-power > optics-diagnostics/laser-rx-power-high-warn-threshold ) ) {
+												<td id="cellamberleft"> {
+													expr optics-diagnostics/rx-signal-avg-optical-power _ " mW / " _ optics-diagnostics/rx-signal-avg-optical-power-dbm _ " dBm";
+												}
+											}
+											else {
+												<td id="paddedcellleft"> {
+													expr optics-diagnostics/rx-signal-avg-optical-power _ " mW / " _ optics-diagnostics/rx-signal-avg-optical-power-dbm _ " dBm";
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-rx-optical-power or optics-diagnostics/laser-rx-optical-power-dbm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser rx power";
+											}
+											if ( ( optics-diagnostics/laser-rx-optical-power-dbm < optics-diagnostics/laser-rx-power-low-alarm-threshold-dbm ) 
+												or ( optics-diagnostics/laser-rx-optical-power-dbm > optics-diagnostics/laser-rx-power-high-alarm-threshold-dbm )
+												or ( optics-diagnostics/laser-rx-optical-power-dbm < optics-diagnostics/laser-rx-power-low-alarm-threshold-dbm ) 
+												or ( optics-diagnostics/laser-rx-optical-power-dbm > optics-diagnostics/laser-rx-power-high-alarm-threshold-dbm ) ) {
+												<td id="cellwarningleft"> {
+													expr optics-diagnostics/laser-rx-optical-power _ " mW / " _ optics-diagnostics/laser-rx-optical-power-dbm _ " dBm";
+												}
+											}
+											else if ( ( optics-diagnostics/laser-rx-optical-power-dbm < optics-diagnostics/laser-rx-power-low-warn-threshold-dbm ) 
+												or ( optics-diagnostics/laser-rx-optical-power-dbm > optics-diagnostics/laser-rx-power-high-warn-threshold-dbm )
+												or ( optics-diagnostics/laser-rx-optical-power-dbm < optics-diagnostics/laser-rx-power-low-warn-threshold-dbm ) 
+												or ( optics-diagnostics/laser-rx-optical-power-dbm > optics-diagnostics/laser-rx-power-high-warn-threshold-dbm ) ) {
+												<td id="cellamberleft"> {
+													expr optics-diagnostics/laser-rx-optical-power _ " mW / " _ optics-diagnostics/laser-rx-optical-power-dbm _ " dBm";
+												}
+											}
+											else {
+												<td id="paddedcellleft"> {
+													expr optics-diagnostics/laser-rx-optical-power _ " mW / " _ optics-diagnostics/laser-rx-optical-power-dbm _ " dBm";
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-bias-current-high-alarm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser bias current high alarm";
+											}
+											if (jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-high-alarm ) = "Off") {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-high-alarm );
+												}
+											}
+											else {
+												<td id="cellwarningleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-high-alarm );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-bias-current-low-alarm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser bias current low alarm";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-low-alarm ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-low-alarm );
+												}
+											}
+											else {
+												<td id="cellwarningleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-low-alarm );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-bias-current-high-warn ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser bias current high warning";
+											}
+											if (jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-high-warn )="Off") {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-high-warn );
+												}
+											}
+											else {
+												<td id="cellamberleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-high-warn );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-bias-current-low-warn ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser bias current low warning";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-low-warn ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-low-warn );
+												}
+											}
+											else {
+												<td id="cellamberleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-bias-current-low-warn );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-tx-power-high-alarm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser output power high alarm";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-high-alarm ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-high-alarm );
+												}
+											}
+											else {
+												<td id="cellwarningleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-high-alarm );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-tx-power-low-alarm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser output power low alarm";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-low-alarm ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-low-alarm );
+												}
+											}
+											else {
+												<td id="cellwarningleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-low-alarm );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-tx-power-high-warn ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser output power high warning";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-high-warn ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-high-warn );
+												}
+											}
+											else {
+												<td id="cellamberleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-high-warn );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-tx-power-low-warn ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser output power low warning";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-low-warn ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-low-warn );
+												}
+											}
+											else {
+												<td id="cellamberleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-tx-power-low-warn );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/module-temperature-high-alarm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module temperature high alarm";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/module-temperature-high-alarm ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-temperature-high-alarm );
+												}
+											}
+											else {
+												<td id="cellwarningleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-temperature-high-alarm );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/module-temperature-low-alarm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module temperature low alarm";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/module-temperature-low-alarm ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-temperature-low-alarm );
+												}
+											}
+											else {
+												<td id="cellwarningleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-temperature-low-alarm );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/module-temperature-high-warn ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module temperature high warning";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/module-temperature-high-warn ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-temperature-high-warn );
+												}
+											}
+											else {
+												<td id="cellamberleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-temperature-high-warn );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/module-temperature-low-warn ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module temperature low warning";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/module-temperature-low-warn ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-temperature-low-warn );
+												}
+											}
+											else {
+												<td id="cellamberleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-temperature-low-warn );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/module-voltage-high-alarm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module voltage high alarm";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/module-voltage-high-alarm ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-voltage-high-alarm );
+												}
+											}
+											else {
+												<td id="cellwarningleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-voltage-high-alarm );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/module-voltage-low-alarm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module voltage low alarm";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/module-voltage-low-alarm ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-voltage-low-alarm );
+												}
+											}
+											else {
+												<td id="cellwarningleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-voltage-low-alarm );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/module-voltage-high-warn ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module voltage high warning";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/module-voltage-high-warn ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-voltage-high-warn );
+												}
+											}
+											else {
+												<td id="cellamberleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-voltage-high-warn );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/module-voltage-low-warn ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module voltage low warning";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/module-voltage-low-warn ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-voltage-low-warn );
+												}
+											}
+											else {
+												<td id="cellamberleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/module-voltage-low-warn );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-rx-power-high-alarm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser rx power high alarm";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-high-alarm ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-high-alarm );
+												}
+											}
+											else {
+												<td id="cellwarningleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-high-alarm );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-rx-power-low-alarm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser rx power low alarm";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-low-alarm ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-low-alarm );
+												}
+											}
+											else {
+												<td id="cellwarningleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-low-alarm );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-rx-power-high-warn ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser rx power high warning";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-high-warn ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-high-warn );
+												}
+											}
+											else {
+												<td id="cellamberleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-high-warn );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-rx-power-low-warn ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser rx power low warning";
+											}
+											if ( jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-low-warn ) = "Off" ) {
+												<td id="paddedcellleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-low-warn );
+												}
+											}
+											else {
+												<td id="cellamberleft"> {
+													expr jcs:printf( "%jcs" , optics-diagnostics/laser-rx-power-low-warn );
+												}
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-bias-current-high-alarm-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser bias current high alarm threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-bias-current-high-alarm-threshold _ " mA";
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-bias-current-low-alarm-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser bias current low alarm threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-bias-current-low-alarm-threshold _ " mA";
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-bias-current-high-warn-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser bias current high warning threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-bias-current-high-warn-threshold _ " mA";
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-bias-current-low-warn-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser bias current low warning threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-bias-current-low-warn-threshold _ " mA";
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-tx-power-high-alarm-threshold or optics-diagnostics/laser-tx-power-high-alarm-threshold-dbm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser output power high alarm threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-tx-power-high-alarm-threshold _ " mW / " _ optics-diagnostics/laser-tx-power-high-alarm-threshold-dbm _ " dBm";
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-tx-power-low-alarm-threshold or optics-diagnostics/laser-tx-power-low-alarm-threshold-dbm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser output power low alarm threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-tx-power-low-alarm-threshold _ " mW / " _ optics-diagnostics/laser-tx-power-low-alarm-threshold-dbm _ " dBm";
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-tx-power-high-warn-threshold or optics-diagnostics/laser-tx-power-high-warn-threshold-dbm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser output power high warning threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-tx-power-high-warn-threshold _ " mW / " _ optics-diagnostics/laser-tx-power-high-warn-threshold-dbm _ " dBm";
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-tx-power-low-warn-threshold or optics-diagnostics/laser-tx-power-low-warn-threshold-dbm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser output power low warning threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-tx-power-low-warn-threshold _ " mW / " _ optics-diagnostics/laser-tx-power-low-warn-threshold-dbm _ " dBm";
+											}
+										}
+									}
+									if ( optics-diagnostics/module-temperature-high-alarm-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module temperature high alarm threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/module-temperature-high-alarm-threshold;
+											}
+										}
+									}
+									if ( optics-diagnostics/module-temperature-low-alarm-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module temperature low alarm threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/module-temperature-low-alarm-threshold;
+											}
+										}
+									}
+									if ( optics-diagnostics/module-temperature-high-warn-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module temperature high warning threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/module-temperature-high-warn-threshold;
+											}
+										}
+									}
+									if ( optics-diagnostics/module-temperature-low-warn-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module temperature low warning threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/module-temperature-low-warn-threshold;
+											}
+										}
+									}
+									if ( optics-diagnostics/module-voltage-high-alarm-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module voltage high alarm threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/module-voltage-high-alarm-threshold _ " V";
+											}
+										}
+									}
+									if ( optics-diagnostics/module-voltage-low-alarm-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module voltage low alarm threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/module-voltage-low-alarm-threshold _ " V";
+											}
+										}
+									}
+									if ( optics-diagnostics/module-voltage-high-warn-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module voltage high warning threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/module-voltage-high-warn-threshold _ " V";
+											}
+										}
+									}
+									if ( optics-diagnostics/module-voltage-low-warn-threshold ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Module voltage low warning threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/module-voltage-low-warn-threshold _ " V";
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-rx-power-high-alarm-threshold or optics-diagnostics/laser-rx-power-high-alarm-threshold-dbm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser rx power high alarm threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-rx-power-high-alarm-threshold _ " mW / " _ optics-diagnostics/laser-rx-power-high-alarm-threshold-dbm _ " dBm";
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-rx-power-low-alarm-threshold or optics-diagnostics/laser-rx-power-low-alarm-threshold-dbm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser rx power low alarm threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-rx-power-low-alarm-threshold _ " mW / " _ optics-diagnostics/laser-rx-power-low-alarm-threshold-dbm _ " dBm";
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-rx-power-high-warn-threshold or optics-diagnostics/laser-rx-power-high-warn-threshold-dbm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser rx power high warning threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-rx-power-high-warn-threshold _ " mW / " _ optics-diagnostics/laser-rx-power-high-warn-threshold-dbm _ " dBm";
+											}
+										}
+									}
+									if ( optics-diagnostics/laser-rx-power-low-warn-threshold or optics-diagnostics/laser-rx-power-low-warn-threshold-dbm ) {
+										<tr> {
+											<td id="paddedcellright"> {
+												expr "Laser rx power low warning threshold";
+											}
+											<td id="paddedcellleft"> {
+												expr optics-diagnostics/laser-rx-power-low-warn-threshold _ " mW / " _ optics-diagnostics/laser-rx-power-low-warn-threshold-dbm _ " dBm";
+											}
+										}
+									}
+								} /* Table */
+							}
+						} /* end of if */
+					}
+				}
+			}
+    }
+    expr jcs:syslog("daemon.info", "SCRIPT_ACTION_OPTICAL_DIAGNOSTICS: Script action taken to show optical diagnostics.");
+  }
+}
+
+template rpc_failure($rpc, $message = "Following errors occurred while trying to gather data: ") {
+  expr jcs:syslog("daemon.error", $message);
+  for-each ($rpc//xnm:error) {
+    expr jcs:syslog("daemon.error", message);
+  }
+}

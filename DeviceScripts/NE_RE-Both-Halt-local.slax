@@ -1,0 +1,86 @@
+/* 
+	Shamelessly stolen by Björn Cersowsky. Script to halt RE.
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0
+	Date: 05.06.2014
+	Last Modified By: bcersows
+	###NE_RE-Both-Halt-local.slax;v1.0;2014.06.05
+*/
+/*
+ * Filename      : NE_RE-Both-Restart-local.slax
+ * Author        : Andrew Sharp asharp@juniper.net
+ * Platform      : Junos Space
+ * Release       : 13.1P2
+ * Version       : 1.0
+ * SVN INFO      :
+ *
+ * $Rev: 34138 $
+ * $Date: 2013-10-25 15:15:08 +0100 (Fri, 25 Oct 2013) $
+ * $Author: asharp $
+ * 
+ * Description   : Request system reboot both-routing-engines.
+ *
+ */
+
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns jspace = "http://jspace-utils/asharp@juniper.net";
+
+import "../import/junos.xsl";
+import "lc-jspace-lib.slax";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "Halt Both RE" */
+/* @DESCRIPTION = "Request system halt both-routing-engines." */
+/* @CONFIRMATION = "Are you sure that you want to halt both Routing Engines?" */
+/* @ISLOCAL = "true" */
+
+match / {
+	<op-script-results> {
+		var $restart = {
+			<command> 'request system halt both-routing-engines in 0';
+		}
+		var $connection = jcs:open();
+		/* abort if no connection to local mgd */
+		if ($connection/..//xnm:error) {
+			call rpc_failure($rpc = $connection/.., $message = "Error connecting on mgd on this RE");
+			<xsl:message terminate="yes"> ;
+		}
+		var $result = jcs:execute( $connection , $restart );
+		if ($result/..//xnm:error) {
+			call rpc_failure($rpc = $result/.., $message = "Error executing command request system halt both-routing-engines in 0");
+			<xsl:message terminate="yes"> ;
+		}
+		<output> {
+	    <HTML> {
+	    	<HEAD> {
+		    	<title> "System Reboot:";
+		    	copy-of jspace:html-style("1");
+				}
+				<BODY> {
+		    	<p> {
+		    		copy-of $result;
+					}
+				}
+	    }
+		}
+		expr jcs:syslog("daemon.info", "SCRIPT_ACTION_RE_HALT: Script action taken to halt both Routing Engines (RE).");
+		var $close-results = jcs:close( $connection );
+		if ($close-results/..//xnm:error) {
+			call rpc_failure($rpc = $close-results/.., $message = "Error closing connection.");
+			<xsl:message terminate="yes"> ;
+		}
+	}
+}
+
+template rpc_failure($rpc, $message = "Following errors occurred while trying to gather data: ") {
+  expr jcs:syslog("daemon.error", $message);
+  for-each ($rpc//xnm:error) {
+    expr jcs:syslog("daemon.error", message);
+  }
+}

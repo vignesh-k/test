@@ -1,0 +1,156 @@
+/*
+ * Filename      : Logical_Interface-Deactivation.slax
+ * Author        : Andrew Sharp asharp@juniper.net
+ * Platform      : MX TRIO / Junos Space
+ * Release       : Junos 12.2+ / 13.1P2
+ * Version       : 1.0
+ * SVN INFO      :
+ *
+ * $Rev: 36133 $
+ * $Date: 2014-04-24 14:14:09 +0100 (Thu, 24 Apr 2014) $
+ * $Author: asharp $
+ * 
+ * Description   : Disable logical interface(s).
+ *
+ */
+
+version 1.0;
+
+/* Namespace declarations */
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns str = "http://exslt.org/strings";
+ns jspace = "http://jspace-utils/asharp@juniper.net";
+ns exsl extension = "http://exslt.org/common";
+
+
+/* Imports */
+import "../import/junos.xsl";
+import "jspace-lib.slax";
+
+/* Junos Space specific context, name and description */
+/* @CONTEXT = "/device/configuration/interfaces/interface/unit" */
+/* @NAME = "Disable Interface" */
+/* @DESCRIPTION = "Disable the interface." */
+/* @CONFIRMATION = "Are you sure that you want to disable this logical interface?" */
+/* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
+
+/* Global variables */
+var $scriptname = "Logical_Interface-Deactivation.slax";
+var $results;
+var $devicename;
+var $physintname;
+var $logintnames;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "The context associated with this script.";
+	}
+}
+param $CONTEXT;
+
+match / {
+	<op-script-results> {
+		/* Split context into each physical interface */
+		var $interfaces = jcs:split("\\|", $CONTEXT);
+
+		/* Start of the configuration file. */
+		var $configuration-change = <configuration> {
+			<interfaces> {
+				/* Loop through each physical interface*/
+				for-each ($interfaces) {
+					/* identify each component (device, physical interface, unit) */
+					var $interface-regex = jcs:regex( "/device(\\[.*\\])/configuration/interfaces/interface(\\[.*\\])/unit(\\[.*\\])", (.) );
+					var $devicename = str:replace(str:replace($interface-regex[2],"[name=\"",""),"\"]","");
+					var $physintname = str:replace(str:replace(str:replace($interface-regex[3],"[name=",""),"]",""),"\"","");
+					var $logintnames = jcs:split("name=",str:replace(str:replace(str:replace(str:replace($interface-regex[4]," or ",""),"[",""),"]",""),"\"",""));
+					<interface> {
+						<name> $physintname;
+						/* Loop through each logical interface */
+						for-each ($logintnames) {
+							if ( position() > 1 ) {
+								<unit> {
+									<name> (.);
+									<disable>;
+								}
+							}
+						}
+					} /* End of interface node */
+				} /* For each physical interface*/
+			} /* End of interfaces node */
+		} /* End of the configuration file */        	
+
+		/* A connection must be opened */
+		var $connection = jcs:open();
+		/* abort if no connection to local mgd */
+		if ($connection/..//xnm:error) {
+			call rpc_failure($rpc = $connection/.., $message = "Error connecting on mgd on this RE");
+			<xsl:message terminate="yes"> ;
+		}
+		/* 
+		 * The connection and change are set as parameters to the jcs:load-configuration template
+		 * which performs the change.  The := operator is used to ensure that the $results variable
+		 * is a node-set rather than a result tree fragment.
+		*/
+		var $results := { call jcs:load-configuration( $connection, $configuration = $configuration-change ); }
+
+		/* Check for errors - report them if they occurred. */
+		if ( $results//xnm:error ) {
+			call rpc_failure($rpc = $results, $message = "Error applying configuration");
+	    for-each ( $results//xnm:error ) {
+	    	<output> {
+		    	<HTML> {
+		    		<HEAD> {
+		    			<title> "Interface disabled results:";
+		    			copy-of jspace:html-style("2");
+						}
+						<BODY> {
+							<p> {
+								expr message;
+							}
+						}
+					}
+				}
+	    }
+		}
+		else {
+			<output> {
+				<HTML> {
+		    	<HEAD> {
+		    		<title> "Interface disabled results:";
+						copy-of jspace:html-style("1");
+					}
+					<BODY> {
+						<p> {
+							expr "The logical interface(s) have now been disabled.";
+						}
+						<p> {
+							if ( $results/commit-results/routing-engine/commit-success ) {
+								expr "Commit success.";
+							}
+							else {
+								copy-of $results;
+							}
+						}
+					}
+				}
+	    }
+		}
+		expr jcs:syslog("daemon.info", "SCRIPT_ACTION_LIF_DISABLE: Script action taken to disable logical interface.");
+		/* The connection is closed. */
+		var $close-results = jcs:close( $connection );
+		if ($close-results/..//xnm:error) {
+			call rpc_failure($rpc = $close-results/.., $message = "Error closing connection.");
+			<xsl:message terminate="yes"> ;
+		}
+	}
+}
+
+template rpc_failure($rpc, $message = "Following errors occurred while trying to gather data: ") {
+  expr jcs:syslog("daemon.error", $message);
+  for-each ($rpc//xnm:error) {
+    expr jcs:syslog("daemon.error", message);
+  }
+}

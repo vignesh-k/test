@@ -1,0 +1,248 @@
+/*
+ * Filename      : Logical_Interface-View_Protocol_Neighbors-local.slax
+ * Author        : Andrew Sharp asharp@juniper.net
+ * Platform      : Junos Space
+ * Release       : 13.1P2
+ * Version       : 1.0
+ * SVN INFO      :
+ *
+ * $Rev: 36133 $
+ * $Date: 2014-04-24 14:14:09 +0100 (Thu, 24 Apr 2014) $
+ * $Author: asharp $
+ * 
+ * Description   : Show IS-IS adjacency, ospf and ldp neighbor data
+ *
+ */
+
+version 1.0;
+
+/* Namespace declarations */
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns jspace = "http://jspace-utils/asharp@juniper.net";
+ns exsl extension = "http://exslt.org/common";
+
+/* Imports */
+import "../import/junos.xsl";
+import "lc-jspace-lib.slax";
+
+/* @CONTEXT = "/device/configuration/interfaces/interface/unit" */
+/* @NAME = "View Protocol Neighbors" */
+/* @DESCRIPTION = "Show IS-IS adjacency, ospf and ldp neighbor data." */
+/* @ISLOCAL = "true" */
+
+/* Global variables */
+var $scriptname = "Logical_Interface-View_Protocol_Neighbors-local.slax";
+var $get-isis-adjacency-information-rpc;
+var $results-isis;
+var $get-ldp-neighbor-information-rpc;
+var $results-ldp;
+var $get-ospf-neighbor-information-rpc;
+var $results-ospf;
+var $logical-interface;
+
+match / {
+	<op-script-results> {
+		var $regex = "/device.*/configuration/interfaces/interface\\[name=\"(.*)\"\\]/unit\\[name=\"(.*)\"";
+		var $result-regex = jcs:regex( $regex , $CONTEXT );
+		var $logical-interface = $result-regex[2] _ "." _ $result-regex[3];
+
+		/* Request IS-IS adjacency information */
+		var  $get-isis-adjacency-information-rpc = <get-isis-adjacency-information> {
+		}
+		var $connection = jcs:open();
+		/* abort if no connection to local mgd */
+		if ($connection/..//xnm:error) {
+			call rpc_failure($rpc = $connection/.., $message = "Error connecting on mgd on this RE");
+			<xsl:message terminate="yes"> ;
+		}
+		var $results-isis = jcs:execute( $connection , $get-isis-adjacency-information-rpc );
+		if ($results-isis/..//xnm:error) {
+			call rpc_failure($rpc = $results-isis/.., $message = "Error collecting isis adjacency information");
+			<xsl:message terminate="yes"> ;
+		}
+
+		/* Request LDP neighbor information */
+		var  $get-ldp-neighbor-information-rpc = <get-ldp-neighbor-information> {
+		}
+		var $results-ldp = jcs:execute( $connection , $get-ldp-neighbor-information-rpc );
+		if ($results-ldp/..//xnm:error) {
+			call rpc_failure($rpc = $results-ldp/.., $message = "Error collecting ldp neighbor information");
+			<xsl:message terminate="yes"> ;
+		}
+
+		/* Request OSPF neighbor information */
+		var  $get-ospf-neighbor-information-rpc = <get-ospf-neighbor-information> {
+		}
+		var $results-ospf = jcs:execute( $connection , $get-ospf-neighbor-information-rpc );
+		if ($results-ospf/..//xnm:error) {
+			call rpc_failure($rpc = $results-ospf/.., $message = "Error collecting ospf neighbor information");
+			<xsl:message terminate="yes"> ;
+		}
+
+		<output> {
+			<HTML> {
+				<HEAD> {
+					<title> "Protocol neighbor information:";
+					copy-of jspace:html-style("6");
+				}
+				<BODY> {
+					<table border="1"> {
+						<tr> {
+							<td id="tableheader"> {
+								expr "IS-IS adjacency";
+							}
+						}
+						<tr> {
+							<td id="tableheader" width="20%"> {
+								expr "Interface";
+							}
+							<td id="tableheader" width="20%"> {
+								expr "System";
+							}
+							<td id="tableheader" width="20%"> {
+								expr "Level";
+							}
+							<td id="tableheader" width="20%"> {
+								expr "State";
+							}
+							<td id="tableheader" width="20%"> {
+								expr "Hold (secs) SNPA";
+							}
+						}
+
+						for-each ( $results-isis/isis-adjacency ) {
+							if ( interface-name == $logical-interface ) {
+								<tr> {
+									<td> {
+										expr (interface-name);
+									}
+									<td> {
+										expr (system-name);
+									}
+									<td> {
+										expr (level);
+									}
+									<td> {
+										expr (adjacency-state);
+									}
+									<td> {
+										expr (holdtime);
+									}
+								}
+							}
+						}
+					}
+					<p> {
+					}
+					<table border="1"> {
+						<tr> {
+							<td id="tableheader"> {
+								expr "LDP neighbor";
+							}
+						}
+						<tr> {
+							<td id="tableheader" width="25%"> {
+								expr "Address";
+							}
+							<td id="tableheader" width="25%"> {
+								expr "Interface";
+							}
+							<td id="tableheader" width="25%"> {
+								expr "Label space ID";
+							}
+							<td id="tableheader" width="25%"> {
+								expr "Hold time";
+							}
+						}
+						for-each ( $results-ldp/ldp-neighbor ) {
+							if ( interface-name == $logical-interface ) {
+								<tr> {
+									<td> {
+										expr (ldp-neighbor-address);
+									}
+									<td> {
+										expr (interface-name);
+									}
+									<td> {
+										expr (ldp-label-space-id);
+									}
+									<td> {
+										expr (ldp-remaining-time);
+									}
+								}
+							}
+						}
+					}
+					<p> {
+					}
+					<table border="1"> {
+						<tr> {
+							<td id="tableheader"> {
+								expr "OSPF neighbor";
+							}
+						}
+						<tr> {
+							<td id="tableheader" width="18%"> {
+								expr "Address";
+							}
+							<td id="tableheader" width="18%"> {
+								expr "Interface";
+							}
+							<td id="tableheader" width="16%"> {
+								expr "State";
+							}
+							<td id="tableheader" width="16%"> {
+								expr "ID";
+							}
+							<td id="tableheader" width="16%"> {
+								expr "Pri";
+							}
+							<td id="tableheader" width="16%"> {
+								expr "Dead";
+							}
+						}
+						for-each ($results-ospf/ospf-neighbor) {
+							if ( interface-name == $logical-interface ) {
+								<tr> {
+									<td> {
+										expr (neighbor-address);
+									}
+									<td> {
+										expr (interface-name);
+									}
+									<td> {
+										expr (ospf-neighbor-state);
+									}
+									<td> {
+										expr (neighbor-id);
+									}
+									<td> {
+										expr (neighbor-priority);
+									}
+									<td> {
+										expr (activity-timer);
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		expr jcs:syslog("daemon.info", "SCRIPT_ACTION_LIF_PROTO: Script action taken to show protocol neighbors of the logical interface.");
+		var $close-results = jcs:close( $connection );
+		if ($close-results/..//xnm:error) {
+			call rpc_failure($rpc = $close-results/.., $message = "Error closing connection.");
+			<xsl:message terminate="yes"> ;
+		}
+	}
+}
+
+template rpc_failure($rpc, $message = "Following errors occurred while trying to gather data: ") {
+  expr jcs:syslog("daemon.error", $message);
+  for-each ($rpc//xnm:error) {
+    expr jcs:syslog("daemon.error", message);
+  }
+}

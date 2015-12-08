@@ -1,0 +1,441 @@
+/* 
+	Script to show all filters used for DDOS detection (in group "ngcoco-filter").			
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0
+	Date: 25.03.2014
+	Last Modified By: bcersows
+	###Script_NE_DDOS_getFilter.slax;v1.0;2014.03.25
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns curl extension = "http://xml.libslax.org/curl";
+ns date = "http://exslt.org/dates-and-times";
+ns str = "http://exslt.org/strings";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "NE DDOS - Show Filters" */
+/* @DESCRIPTION = "Outputs all apply-macros and filters. Used for maintenance." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+/* @PASSDEVICECREDENTIALS = "true" */
+/* @PROMOTEs = "yes" */
+
+mvar $counter = 0;
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+param $credentials;
+
+strip-space *;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			/*if ( jcs:regex( "/device\\[name=\".*\"\\]/configuration/access/radius-server\\[name=\".*\"\\]", $CONTEXT ) ) {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\]/configuration/access/radius-server\\[name=\"(.*)\"\\]", $CONTEXT )[2];
+			} else {
+				expr jcs:regex( "/device\\[name=\"(.*)\"\\].*", $CONTEXT )[2];
+			}*/
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+				copy-of bcersows:insertCompletionTest();
+				<div class="tabs"> {
+					<div id="tabsNavigation" class="tabsNavigation"> {
+						<ul> {
+							<li class=" active"> {
+								<a href="#item1" onclick="return setActiveTab( this );">"Output " _ $myDevice;
+							}
+							<li> {
+								<a href="#item2" onclick="return setActiveTab( this );">"long2";
+							}
+							<li> {
+								<a href="#item3" onclick="return setActiveTab( this );">"long3";
+							}
+							copy-of bcersows:insertTLogo();
+						}
+					}
+					<div id="tabInner" class="tabInner"> {
+						<div id="item1" class="tabItem"> {
+							copy-of bcersows:insertHeaderBig( $myDevice );
+							/*copy-of bcersows:insertCurrentTime();*/
+							
+							if ( $connection ) { } else {	
+								<div class="error"> {
+									expr "Konnte keine Verbindung aufbauen."; <br>;
+									expr "Abbruch folgt.";
+								}
+							}	
+							
+							copy-of bcersows:insertSoftwareInformation( $connection );
+							
+							var $rpc = <get-configuration> {
+								<configuration> {
+									<groups> {
+										<name> "ngcoco-filter";
+									}
+								}
+							}
+							set $results = jcs:execute( $connection, $rpc );
+							call checkErrors( $resultsNodeSet = $results, $connection, $msg = "Fehler." );
+
+							<div> {
+								<p class="bold subheader">{
+									<span class="left"> { expr "Filters"; }
+									copy-of bcersows:insertDownloadButton( "resultsTable", "ddosFilterMacros" );
+									if ( !$results/groups/apply-macro ) {
+										copy-of bcersows:disableDownloadButton();
+									}
+								}
+								<p> {
+									expr "Amount of Apply-Macros: ";
+									expr count( $results/groups/apply-macro );
+									expr ".";
+								}
+								if ( $results/groups/apply-macro ) {
+									<table id="resultsTable" class="xwide"> {
+										<tr> {
+											<th class="alignLeft"> { expr "Macro Name"; }
+											<th class="alignLeft"> { expr "Attribute Name"; }
+											<th class="alignLeft"> { expr "Attribute Value"; }
+										}
+										
+										for-each ( $results/groups/apply-macro ) {
+											<tr> {
+												<td> ./name;
+											}
+											for-each ( ./data ) {
+												<tr> {
+													<td class="alignLeft"> " ";
+													<td class="alignLeft"> ./name;
+													<td class="alignLeft"> {
+														if ( ./name != "INCIDENT-ID" ) {
+															<a href="#" _ ./value _ "" style="text-decoration: none;" title="Jump to filter " _ ./value _ "."> ./value;
+														} else {
+															expr ./value;
+														}
+													}
+												}
+											}
+										}
+									}
+								} else {
+									<p> {
+										expr "There are no filters at the moment.";
+									}
+								}
+								
+								copy-of bcersows:insertBackButton();
+							}
+							
+							<div> {
+								<p class="bold subheader">{
+									<span class="left"> { expr "Filters"; }
+									copy-of bcersows:insertDownloadButton( "filtersTable", "ddosFilters" );
+									if ( !$results/groups/firewall/family/inet/filter && !$results/groups/firewall/family/inet6/filter ) {
+										copy-of bcersows:disableDownloadButton();
+									}
+								}
+								<p> {
+									<p> {
+										expr "Amount of IPv4 filters: ";
+										expr count( $results/groups/firewall/family/inet/filter );
+										expr ".";
+									}
+									<p> {
+										expr "Amount of IPv6 filters: ";
+										expr count( $results/groups/firewall/family/inet6/filter );
+										expr ".";
+									}
+								}
+								
+								if ( $results/groups/firewall/family/inet/filter || $results/groups/firewall/family/inet6/filter ) {
+									<table id="filtersTable" class="xwide"> {
+										<tr> {
+											<th class="alignLeft"> { expr "Type"; }
+											<th class="alignLeft"> { expr "Filter Name"; }
+											<th class="alignLeft"> { expr "From"; }
+											<th class="alignLeft"> { expr "To"; }
+											<th class="alignLeft"> { expr "Then"; }
+										}
+									
+										if ( $results/groups/firewall/family/inet/filter ) {
+											<tr> {
+												<td> "Inet v4";
+											}
+											for-each ( $results/groups/firewall/family/inet/filter ) {
+												<tr> {
+													<td> " ";
+													<td class="lpadding5" id="" _ ./name _ ""> ./name;
+												}
+												for-each ( ./term ) {
+													if ( ./name != "final_accept" ) {
+														<tr> {
+															<td> " ";
+															<td class="alignLeft lpadding15" style="vertical-align: top;"> "Term Name: " _ ./name;
+															<td class="alignLeft" style="vertical-align: top;"> {
+																for-each( ./from/node() ) {
+																	if ( name( . ) != "" ) {
+																		expr name( . ) _ " " _ ./name;
+																		if ( position() != last() ) {
+																			<br>;
+																		}
+																	}
+																}
+															}
+															<td class="alignLeft" style="vertical-align: top;"> {
+																for-each( ./to/node() ) {
+																	if ( name( . ) != "" ) {
+																		expr name( . ) _ " " _ ./name; 
+																		if ( position() != last() ) {
+																			<br>;
+																		}
+																	}
+																}
+															}
+															<td class="alignLeft" style="vertical-align: top;"> {
+																for-each( ./then/node() ) {
+																	if ( name( . ) != "" ) {
+																		expr name( . ) _ " " _ .; 
+																		if ( position() != last() ) {
+																			<br>;
+																		}
+																	}
+																}
+															}
+														}
+													}
+												}
+											}
+										}
+										if ( $results/groups/firewall/family/inet6/filter ) {
+											<tr> {
+												<td> "Inet v6";
+											}
+											for-each ( $results/groups/firewall/family/inet6/filter ) {
+												<tr> {
+													<td> " ";
+													<td class="lpadding5"> ./name;
+												}
+												for-each ( ./term ) {
+													if ( ./name != "final_accept" ) {
+														<tr> {
+															<td> " ";
+															<td class="alignLeft lpadding15" style="vertical-align: top;"> "Term Name: " _ ./name;
+															<td class="alignLeft" style="vertical-align: top;"> {
+																for-each( ./from/node() ) {
+																	if ( name( . ) != "" ) {
+																		expr name( . ) _ " " _ ./name; 
+																		if ( position() != last() ) {
+																			<br>;
+																		}
+																	}
+																}
+															}
+															<td class="alignLeft" style="vertical-align: top;"> {
+																for-each( ./to/node() ) {
+																	if ( name( . ) != "" ) {
+																		expr name( . ) _ " " _ ./name; 
+																		if ( position() != last() ) {
+																			<br>;
+																		}
+																	}
+																}
+															}
+															<td class="alignLeft" style="vertical-align: top;"> {
+																for-each( ./then/node() ) {
+																	if ( name( . ) != "" ) {
+																		expr name( . ) _ " " _ .; 
+																		if ( position() != last() ) {
+																			<br>;
+																		}
+																	}
+																}
+															}
+														}
+													}
+												}
+											}
+										}
+									}
+								}
+								
+								copy-of bcersows:insertBackButton();
+							}
+						}
+						<div id="item2" class="tabItem"> {
+							<h2> {
+								expr "blabla";
+							}
+						}
+						<div id="item3" class="tabItem"> {
+							<h2> {
+								expr "blabla";
+							}
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "bla";
+							<p> "blas";
+							<p> "blas";
+							<p> "blas";
+							
+						}
+					}
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					<span class="left italic unselectable"> "vs. 1.0";
+					<span class="right"> { 
+						expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+					}
+				}
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}

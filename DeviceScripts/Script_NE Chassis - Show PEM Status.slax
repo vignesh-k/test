@@ -1,0 +1,192 @@
+/* 
+	Script to show the status of the PEM.			
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0
+	Date: 29.04.2014
+	Last Modified By: bcersows
+	###Script_NE Chassis - Show PEM Status.slax;v1.0;2014.04.29
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @NAME = "NE Chassis - Show PEM Status" */
+/* @DESCRIPTION = "Script to show the status of the PEM." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'DEVICE','defaultvaluexpath':'/device/name/text()'}]" */
+/* @PROMOTEs="yes" */
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+}
+param $CONTEXT;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $myDevice = {
+		if ( false() ) {
+			expr $DEVICE;
+		} else {
+			expr jcs:regex( "/device\\[name=\"([^\"]*)\"\\].*", $CONTEXT )[2];
+		}
+	}
+	
+	/*
+	*	Get configuration.
+	*/
+	
+	var $connection = jcs:open();
+	
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+			}
+			<BODY> {
+				copy-of bcersows:insertHeaderBig( $myDevice );
+				
+				copy-of bcersows:insertCompletionTest();
+				
+				if ( $connection ) { } else {	
+					<div class="error"> {
+						expr "Konnte keine Verbindung aufbauen."; <br>;
+						expr "Abbruch folgt..";
+						expr ".";
+						<xsl:message terminate="yes"> "Could not open connection from Script.";
+					}
+				}	
+				
+				copy-of bcersows:insertSoftwareInformation( $connection );
+				
+				var $rpcPower = "get-power-usage-information";
+				var $resultsPower = jcs:execute( $connection, $rpcPower );
+				call checkErrors( $resultsNodeSet = $resultsPower, $connection, $msg = "Error while getting power info." );
+				var $rpcEnvPEM = "get-environment-pem-information";
+				var $resultsEnvPEM = jcs:execute( $connection, $rpcEnvPEM );
+				call checkErrors( $resultsNodeSet = $resultsEnvPEM, $connection, $msg = "Error while getting environment pem information." );
+				
+				<div> {
+					<p class="bold subheader">{
+						<span class="left"> { expr "Fabric Plane"; }
+						copy-of bcersows:insertDownloadButton( "resultsTable", "powerStatus" );
+						if ( !$resultsPower/power-usage-item ) {
+							copy-of bcersows:disableDownloadButton();
+						}
+					}
+					
+					if ( $resultsPower/power-usage-system ) {
+						expr "Total system capacity: " _ $resultsPower/power-usage-system/capacity-sys-actual _ "W (max ";
+						expr $resultsPower/power-usage-system/capacity-sys-max _ "W)."; <br>;
+						expr "Total remaining power: " _ $resultsPower/power-usage-system/capacity-sys-remaining _ "W.";
+						if ( $resultsPower/power-usage-system/power-usage-zone-information ) {
+							<p> "System Power:";
+							<table id="systemResultsTable" class="wide"> {
+								<tr> {
+									<th> { expr "Zone"; }
+									<th> { expr "Capacity (in W)"; }
+									<th> { expr "Allocated power (in w)"; }
+									<th> { expr "actual usage (in w)"; }
+								}
+								
+								for-each ( $resultsPower/power-usage-system/power-usage-zone-information ) {
+									<tr> {
+										<td> ./zone;
+										<td> ./capacity-actual _ " (max " _ ./capacity-max _ ")";
+										<td> {
+											expr ./capacity-allocated _ " (" _ ./capacity-remaining _ " remaining)";
+										}
+										<td> ./capacity-actual-usage;
+									}
+								}
+							}
+						}
+					} 
+					
+					if ( $resultsPower/power-usage-item ) {
+						<table id="resultsTable" class="xwide"> {
+							<tr> {
+								<th> { expr "name"; }
+								<th> { expr "State"; }
+								<th> "Temperature";
+								<th> { expr "AC input"; }
+								<th> { expr "Capacity (in W)"; }
+								<th> { expr "DC output"; }
+							}
+							
+							for-each ( $resultsPower/power-usage-item ) {
+								<tr> {
+									var $name = ./name;
+									<td> $name;
+									<td> ./state;
+									<td> $resultsEnvPEM/environment-component-item[name==$name]/temperature-reading/temperature;
+									<td> { 
+										expr "" _ ./ac-input-detail/ac-input _ "(feeds ";
+										expr "expected: " _ ./ac-input-detail/ac-expect-feed _ ", actual: ";
+										expr ./ac-input-detail/ac-actual-feed _ ")";
+									}
+									<td> {
+										expr ./pem-capacity-detail/capacity-actual _ " (";
+										expr "max " _ ./pem-capacity-detail/capacity-max _ ")";
+									}
+									<td> {
+										expr ./dc-output-detail/dc-power _ " (";
+										expr "zone " _ ./dc-output-detail/zone _ ", ";
+										expr "" _ ./dc-output-detail/dc-current _ "A at ";
+										expr "" _ ./dc-output-detail/dc-voltage _ ", ";
+										expr "" _ ./dc-output-detail/dc-load _ "% of capacity)";
+									}
+								}
+							}
+						}
+					} 
+					
+					copy-of bcersows:insertBackButton();
+				}
+				
+				var $duration = date:seconds() - date:seconds( $localtime );
+				<div class="wholeLine"> {
+					<span class="left italic unselectable"> "vs. 1.0";
+					expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+				}
+			}
+		}
+	}
+
+	set $unlock-results = jcs:execute( $connection, "unlock-database" );
+	expr jcs:close( $connection );
+	
+}
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}

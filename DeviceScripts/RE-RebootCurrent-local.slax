@@ -1,0 +1,149 @@
+/* 
+	Script to reboot the currently selected RE (via physical inventory).
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0
+	Date: 17.09.2014
+	Last Modified By: bcersows
+	###RE-RebootCurrent-local;v1.0;2014.09.17
+*/
+
+/*
+	Changelog:
+	----------
+	1.0; 17.09.2014: 
+		- Necromancy used to add a header to a very old Script. :)
+*/
+
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns jspace = "http://jspace-utils/asharp@juniper.net";
+
+import "../import/junos.xsl";
+import "lc-jspace-lib.slax";
+
+/* @CONTEXT = "/device/chassis-inventory/chassis/chassis-module[starts-with(name,"Routing Engine")]" */
+/* @NAME = "Reboot selected RE" */
+/* @DESCRIPTION = "Reboots the currently selected RE." */
+/* @CONFIRMATION = "Are you sure that you want to reboot this Routing Engine?" */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+
+/* /device[name="BNGJMX3"]/chassis-inventory/chassis[name="Chassis"]/chassis-module[name="Routing Engine 0"] */
+/* juise /var/cache/jboss/LocalScript/RE-RebootCurrent-local.slax space@10.182.57.42 CONTEXT /device[name="BNGJMX3"]/chassis-inventory/chassis[name="Chassis"]/chassis-module[name="Routing Engine 0"] */
+
+var $rebootMaster = 'request system reboot in 0';
+var $rebootBackup = 'request system reboot other-routing-engine in 0';
+
+match / {
+	<op-script-results> {
+		var $connection = jcs:open();
+		/* abort if no connection to local mgd */
+		if ($connection//self::xnm:error) {
+			call rpc_failure($rpc = $connection/.., $message = "Error connecting on mgd on this RE");
+			<xsl:message terminate="yes"> ;
+		}
+		
+		/* /device[name=JMX4]/chassis-inventory/chassis[name=Chassis]/chassis-module[name=Routing Engine 0] */
+		/* /device[name="JMX4"]/chassis-inventory/chassis[name="Chassis"]/chassis-module[name="Routing Engine 0"] */
+		var $slot = jcs:regex( ".*/device\\[name=\"?.*\"?\\]/chassis-inventory/chassis\\[name=\"?.*\"?\\]/chassis-module\\[name=\"?.* ([0-9]+)\"?\\].*", $CONTEXT );
+		
+		<output> {
+			<HTML> {
+				<HEAD> {
+					<title> "System Reboot:";
+					copy-of jspace:html-style("1");
+				}
+				<BODY> {
+					/*expr "CONTE: " _ $CONTEXT;
+					expr "Slot: " _ $slot[2];*/
+					
+					var  $get-route-engine-information-rpc = <get-route-engine-information> {
+						<slot> $slot[2];
+					}
+					if ( $slot ) { } else {
+						expr "Konnte Slot nicht erkennen. Bitte erneut versuchen.";
+						<xsl:message terminate="yes"> ;
+					}
+					
+					<h3> {
+						expr "Reboot of RE " _ $slot[2] _ ".";
+					}
+					
+					var $requestResults = jcs:execute( $connection , $get-route-engine-information-rpc );
+					if ($requestResults//self::xnm:error) {
+						call rpc_failure($rpc = $results/.., $message = "Error collecting route engine information.");
+						<xsl:message terminate="yes"> ;
+					}
+					
+					var $restart = {
+						if ($requestResults/route-engine/mastership-state) {	
+							if ($requestResults/route-engine/mastership-state == "backup") {
+								<command> $rebootBackup;
+							} else {
+								<command> $rebootMaster;
+							}				
+						}
+					}
+					
+					if ($requestResults/route-engine/mastership-state) {	
+						if ($requestResults/route-engine/mastership-state == "backup") {
+							expr "It is Backup.";
+						} else {
+							expr "It is Master.";
+						}				
+					}
+					
+					var $result = jcs:execute( $connection , $restart );
+					if ($result//self::xnm:warning) {
+						<p style="background-color: yellow;"> {
+							<expr> "There was/were warning(s):"; <br>{}
+							for-each ($result//self::xnm:warning) {
+								expr ./message;
+								<br> {}
+							}
+						}
+					}
+					if ($result//self::xnm:error) {
+						call rpc_failure($rpc = $result/.., $message = "Error executing command " _ $restart _ ".");
+						<xsl:message terminate="yes"> ;
+					}
+				
+					<p> {
+						expr "Reboot output message:"; <br>{}
+						
+						if ($result/request-reboot-status) {
+							expr " " _ $result/request-reboot-status; <br>{}
+						} else {
+							copy-of $result;
+						}
+						
+						<br>{}<br>{}
+						
+					}
+				}
+			}
+		}	/* /output */
+		expr jcs:syslog("daemon.info", "SCRIPT_ACTION_RE_REBOOT: Script action taken to reboot the Routing Engine (RE) " _ $slot[2] _ ".");
+		var $close-results = jcs:close( $connection );
+		if ($close-results//self::xnm:error) {
+			call rpc_failure($rpc = $close-results/.., $message = "Error closing connection.");
+			<xsl:message terminate="yes"> ;
+		}
+	}
+}
+
+template rpc_failure($rpc, $message = "Following errors occurred while execution: ") {
+	expr jcs:syslog("daemon.error", $message);
+	/*<output> $message;*/
+	<p style="background-color: red;"> {
+		expr $message;
+		for-each ($rpc//xnm:error) {
+			expr jcs:syslog("daemon.error", message);
+		}
+	}
+}

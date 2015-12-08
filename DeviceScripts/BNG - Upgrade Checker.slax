@@ -1,0 +1,880 @@
+/*
+	Script to check some commands, saves their output to a file and allows to compare those values later with the current ones.
+	Used before and after a JunOS upgrade. -- First change
+*/
+
+/*
+	Author: bcersows
+	Version: 1.0
+	Date: 04.02.2015
+	Last Modified By: bcersows
+	###BNG - Upgrade Checker.slax;v1.0;2014.02.04
+*/
+
+/*
+	Changelog:
+	----------
+	1.0; 04.02.2015: 
+		- First version.
+*/
+
+version 1.1;
+
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+/*ns slax = "http://xml.libslax.org/slax";*/
+ns exsl extension = "http://exslt.org/common";
+ns saxon = "http://icl.com/saxon";
+ns str = "http://exslt.org/strings";
+ns date = "http://exslt.org/dates-and-times";
+
+ns bcersows = "http://bcersows@telekom.de";
+import "Space_Library-Local.slax";
+
+import "../import/junos.xsl";
+
+/* @CONTEXT = "/device[matches(name, '\w{3}J\d{2,3}') or matches(name, '^(bng|BNG).*$')]" */
+/* @NAME = "BNG - Upgrade Check" */
+/* @DESCRIPTION = "Script to check some commands, saves their output to a file and allows to compare those values later with the current ones.<br />Used before and after a JunOS upgrade." */
+/* @ISLOCAL = "true" */
+/* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
+/* @VARIABLECONTEXT = "[{'name':'createBasePoint','selectionvalues':'No, Yes'}]" */
+/* @PASSDEVICECREDENTIALS = "true" */
+/* @PROMOTE = "yes" */
+
+var $arguments = {
+	<argument> {
+		<name> "CONTEXT";
+		<description> "Context beim Aufruf.";
+	}
+	<argument> {
+		<name> "createBasePoint";
+		<description> "Create a new reference point ('Yes') or compare with previous snapshot ('No')? (Yes, No)";
+	}
+}
+param $CONTEXT;
+param $createBasePoint;
+
+mvar $createCheckPoint = false();
+
+mvar $counterTotalLines = 0;
+mvar $counterTotalFields = 0;
+mvar $counterNewLines = 0;
+mvar $counterGoneLines = 0;
+mvar $counterChangedFields = 0;
+
+match / {
+<op-script-results> {
+/*template junoscript() {*/
+	mvar $results;
+	mvar $configRpcs;
+	mvar $unlock-results;
+	
+	mvar $localtime = date:date-time();
+	
+	var $devices = bcersows:credentials();
+	var $myDevice = {
+		for-each ( $devices/device/host ) {
+			<xsl:sort>;
+			expr .;
+			if ( position() != last() ) {
+				expr ", ";
+			}
+		}
+	}
+	
+	if ( $createBasePoint = 'Yes' ) {
+		set $createCheckPoint = true();
+	}
+
+	<output> {
+		<HTML> {
+			<HEAD> {
+				<title> "Informationen ueber BNG " _ $myDevice _ ".";
+				copy-of bcersows:insertCSS();
+				copy-of bcersows:insertJS();
+				
+				<style> {
+					<xsl:text disable-output-escaping="yes">
+						".redBack { background-color: RED; }
+						.orangeBack { background-color: ORANGE; }
+						.greenBack { background-color: GREEN; }
+						
+						.subheaderUnderline {
+							font-size: 10px;
+							font-weight: bold;
+							text-decoration: underline;
+						}
+						
+						.underline { text-decoration: underline; }
+						
+						#whole {
+							width: 100%;
+						}"
+					;
+				}
+				
+				<script> {
+					<xsl:text disable-output-escaping="yes">
+						"/* Nothing here. */"
+					;
+				}
+			}
+			<BODY> {
+				copy-of bcersows:insertExportWindowButton();
+				<div id="whole"> {
+					copy-of bcersows:insertHeaderBig( $myDevice );
+					copy-of bcersows:insertCompletionTest();
+					
+					<div> {
+						<div class='toggleView' style='max-heights: 100%;' id='anchorToggleDevices'> {
+							<div class='toggleViewButton ml-10 unselectable'> {
+								<span class='toggleViewButtonText'> 'Show';
+								<span> 'Device List';
+							}
+							<div class='toggleViewContent ml-20 deviceListTiles'> {
+								for-each ( $devices/device ) {
+									<xsl:sort>;
+									<a href='#anchorDevice' _ (host) class='no-underline'> {
+										<div class='deviceListTile deviceListTile-h20'> (host) _ '';
+									}
+								}
+							}
+						}
+					
+						<div class='resultsDevices'> {
+							for-each ( $devices/device ) {
+								<xsl:sort>;
+								var $connection = jcs:open( (target) , (user) , (passwd) );
+								var $deviceName = (host);
+								
+								set $counterTotalLines = 0;
+								set $counterTotalFields = 0;
+								set $counterNewLines = 0;
+								set $counterGoneLines = 0;
+								set $counterChangedFields = 0;
+								
+								<div class='resultsDevice' id='anchorDevice' _ $deviceName> {
+									<p class="bold subheader">{
+										<span class="left"> { expr "Device " _ $deviceName; }
+									}
+									
+									if ( $connection && !$connection//self::xnm:error ) {
+										var $save := <save> {
+											<host-name> $deviceName;
+											<time> date:date-time();
+											<version> "1.0";
+											/* Hardware area. */
+											<hardware> {
+												<inventory> {
+													<pdesc> "Hardware Inventory";
+													var $rpc = <get-chassis-inventory> { <detail>; }
+													var $inventory = jcs:execute( $connection, $rpc );
+													for-each( $inventory//chassis-module ) {
+														<module> {
+															<nid> ./name;
+															<name> ./name;
+															<parent> '';
+															<lvl> '0';
+															<serial-number> ./serial-number;
+														}
+														for-each( .//chassis-sub-module ) {
+															<module> {
+																<nid> ../name _ '-' _ ./name;
+																<name> ./name;
+																<parent> ../name;
+																<lvl> '1';
+																<serial-number> ./serial-number;
+															}
+															for-each( .//chassis-sub-sub-module ) {
+																<module> {
+																	<nid> ../../name _ '-' _ ../name _ '-' _ ./name;
+																	<name> ./name;
+																	<parent> ../name;
+																	<lvl> '2';
+																	<serial-number> ./serial-number;
+																}
+																for-each( .//chassis-sub-sub-sub-module ) {
+																	<module> {
+																		<nid> ../../../name _ '-' _ ../../name _ '-' _ ../name _ '-' _ ./name;
+																		<name> ./name;
+																		<parent> ../name;
+																		<lvl> '3';
+																		<serial-number> ./serial-number;
+																	}
+																}
+															}
+														}
+													}
+												}
+												<fpcs> {
+													<pdesc> "FPCs";
+													var $rpc = <get-fpc-information>;
+													var $fpcs = jcs:execute( $connection, $rpc );
+													for-each( $fpcs//fpc ) {
+														<fpc> {
+															<slot> ./slot;
+															<state> ./state;
+															<memory-dram-size> ./memory-dram-size _ ' ';
+														}
+													}
+												}
+												<pics> {
+													<pdesc> "PICs";
+													var $rpc = <get-pic-information>;
+													var $pics = jcs:execute( $connection, $rpc );
+													for-each( $pics//fpc ) {
+														/*<element> {
+															<slot> ./slot;
+															<state> ./state;
+														}*/
+														for-each( ./pic ) {
+															<pic> {
+																<id> ../slot _ '-' _ ./pic-slot;
+																<fpc-slot> ../slot;
+																<fpc-state> ../state;
+																<pic-slot> ./pic-slot;
+																<pic-state> ./pic-state;
+															}
+														}
+													}
+												}
+												<chassis-ext> {
+													<pdesc> "Extended Chassis";
+													<note> "Not for 13.1 nodes.";
+													var $rpc = <get-fm-ext-state-information>;
+													var $chass = jcs:execute( $connection, $rpc );
+													for-each( $chass//fm-ext-state-item ) {
+														<item> {
+															<plane-slot> ./plane-slot;
+															<state> ./state;
+															<link-error> ./link-error;
+															<link-tf> ./link-tf;
+														}
+													}
+												}
+												<power> {
+													<pdesc> "Power Supply";
+													var $rpc = <get-power-usage-information>;
+													var $power = jcs:execute( $connection, $rpc );
+													for-each( $power//power-usage-item ) {
+														<power-usage-item> {
+															<name> ./name;
+															<state> ./state;
+															<ac-input> ./ac-input-detail/ac-input;
+															<ac-expect-feed> ./ac-input-detail/ac-expect-feed;
+															<ac-actual-feed> ./ac-input-detail/ac-actual-feed;
+														}
+													}
+												}
+												<fans> {
+													<pdesc> "Fans";
+													var $rpc = { <command> "show chassis fan"; };
+													var $fans = jcs:execute( $connection, $rpc );
+													for-each( $fans//fan-information-rpm-item ) {
+														<fan> {
+															<name> ./name;
+															<status> ./status;
+															<measurement> ./comment;
+														}
+													}
+												}
+												<res> {
+													<pdesc> "Routing Engines";
+													var $rpc = <get-environment-re-information>;
+													var $res = jcs:execute( $connection, $rpc );
+													for-each( $res//environment-component-item ) {
+														<eci> {
+															<name> ./name;
+															<state> ./state;
+														}
+													}
+												}
+												<clock-modules> {
+													<pdesc> "Clock Modules";
+													var $rpc = { <command> "show chassis synchronization clock-module routing-engine both"; };
+													var $modules = jcs:execute( $connection, $rpc );
+													for-each( $modules//multi-routing-engine-item ) {
+														<clock> {
+															<re-name> ./re-name;
+															<name> ./clock-synchronization-clock-module/clock-module-name;
+															<state> ./clock-synchronization-clock-module/clock-module-current-state;
+															<type> ./clock-synchronization-clock-module/clock-module-monitor-source-type;
+															<source-status> ./clock-synchronization-clock-module/clock-module-monitor-source-status;
+														}
+													}
+												}
+												<fpm> {
+													<pdesc> "FPMs";
+													var $rpc = <get-environment-fpm-information>;
+													var $fpm = jcs:execute( $connection, $rpc );
+													for-each( $fpm//environment-component-item ) {
+														<eci> {
+															<name> ./name;
+															<state> ./state;
+														}
+													}
+												}
+											}
+											/* Software area. */
+											<software> {
+												<subscriber-sum> {
+													<pdesc> "Subscriber Summary";
+													var $rpc = <get-subscribers-summary>;
+													var $ss = jcs:execute( $connection, $rpc );
+													<state-total> $ss/counters[@junos:style="state-summary"]/session-state-total;
+													<type-pppoe> $ss/counters[@junos:style="type-summary"]/session-type-pppoe;
+													<type-total> $ss/counters[@junos:style="type-summary"]/session-type-total;
+												}
+												<subscriber-ports> {
+													<pdesc> "Subscribers per Port";
+													var $rpc = <get-subscribers-summary> { <port>; };
+													var $ssp = jcs:execute( $connection, $rpc );
+													for-each ( $ssp/counters[@junos:style="port-summary"]/port-name ) {
+														<port> {
+															var $pos = position();
+															<name> .;
+															<count> $ssp/counters[@junos:style="port-summary"]/port-count[ $pos ];
+														}
+													}
+												}
+												<descriptions> {
+													<pdesc> "Interface Descriptions";
+													var $rpc = <get-interface-information> { <descriptions>; };
+													var $descs = jcs:execute( $connection, $rpc );
+													for-each( $descs//physical-interface[ starts-with( description, '#m#' ) and not( contains( description, 'DEU.DTAG' ) ) ] ) {
+														<physical-interface> {
+															<name> ./name;
+															<description> ./description;
+														}
+													}
+												}
+												<bgp-sum> {
+													<pdesc> "BGP Summary";
+													var $rpc = <get-bgp-summary-information>;
+													var $peers = jcs:execute( $connection, $rpc );
+													for-each( $peers//bgp-peer ) {
+														<bgp-peer> {
+															<name> ./peer-address;
+															<peer-state> ./peer-state[@junos:format];
+														}
+													}
+												}
+												<isis-adj> {
+													<pdesc> "IS-IS Adjacency";
+													var $rpc = <get-isis-adjacency-information>;
+													var $isis = jcs:execute( $connection, $rpc );
+													for-each( $isis//isis-adjacency ) {
+														<intf> {
+															<name> ./interface-name;
+															<system> ./system-name;
+															<lvl> ./level;
+															<state> ./adjacency-state;
+														}
+													}
+												}
+												<mpls-int> {
+													<pdesc> "MPLS Interfaces";
+													var $rpc = <get-mpls-interface-information>;
+													var $mpls = jcs:execute( $connection, $rpc );
+													for-each( $mpls//mpls-interface ) {
+														<intf> {
+															<name> ./interface-name;
+															<state> ./mpls-interface-state;
+														}
+													}
+												}
+												<ldp-sess> {
+													<pdesc> "LDP Session";
+													var $rpc = <get-ldp-session-information>;
+													var $ldp = jcs:execute( $connection, $rpc );
+													for-each( $ldp//ldp-session ) {
+														<neighbor> {
+															<addr> ./ldp-neighbor-address;
+															<state> ./ldp-session-state;
+															<conn> ./ldp-connection-state;
+														}
+													}
+												}
+												<ntp-assoc> {
+													<pdesc> "NTP Associations";
+													<note> 'Hoping for a real XML output. RegEx: ^[*+]([0-9\.]+) +([0-9a-zA-Z\.]+) +([0-9\.]+)[- 0-9\.]+$ .';
+													var $rpc = { <command> "show ntp associations"; };
+													var $ntp = jcs:execute( $connection, $rpc );
+													var $lines = jcs:break-lines( $ntp );
+													for-each ( $lines ) {
+														if ( position() > 3 ) {
+															var $reg = jcs:regex( "^[*+]([0-9\.]+) +([0-9a-zA-Z\.]+) +([0-9\.]+)[- 0-9\.]+$", . );
+															<assoc> {
+																<remote> $reg[2] _ ' ';
+																<refid> $reg[3] _ ' ';
+																<st> $reg[4] _ ' ';
+															}
+														}
+													}
+												}
+												<ae0red> {
+													<pdesc> "AE0 Redundancy Status";
+													var $rpc = <get-redundancy-status> { <interface-name> 'ae0'; };
+													var $red = jcs:execute( $connection, $rpc );
+													for-each( $red//interface-redundancy ) {
+														<name> ./interface-name;
+														<state> ./state;
+														<status> ./current-status;
+													}
+												}
+												<pim-neighbors> {
+													<pdesc> "PIM Neighbors";
+													var $rpc = <get-pim-neighbors-information>;
+													var $pim = jcs:execute( $connection, $rpc );
+													for-each( $pim//pim-interface/pim-neighbor ) {
+														<neighbor> {
+															<name> ./pim-interface-name;
+															/*<flagH> { if ( boolean( ./pim-neighbor-flags/pim-neighbor-hold-time-flag ) ) { expr '1'; } else { expr '0'; } }
+															<flagL> { if ( boolean( ./pim-neighbor-flags/pim-neighbor-lan-prune-flag ) ) { expr '1'; } else { expr '0'; } }
+															<flagP> { if ( boolean( ./pim-neighbor-flags/pim-neighbor-priority-flag ) ) { expr '1'; } else { expr '0'; } }*/
+															<flagH> { if ( ./pim-neighbor-flags/pim-neighbor-hold-time-flag ) { expr '1'; } else { expr '0'; } }
+															<flagL> { if ( ./pim-neighbor-flags/pim-neighbor-lan-prune-flag ) { expr '1'; } else { expr '0'; } }
+															<flagP> { if ( ./pim-neighbor-flags/pim-neighbor-priority-flag ) { expr '1'; } else { expr '0'; } }
+														}
+													}
+												}
+												<pim-interfaces> {
+													<pdesc> "PIM Interfaces";
+													var $rpc = <get-pim-interfaces-information>;
+													var $pim = jcs:execute( $connection, $rpc );
+													for-each( $pim//pim-interface ) {
+														<intf> {
+															<name> ./pim-interface-name;
+															<status> ./status;
+															<mode> { 
+																if ( ./pim-interface-mode-abbreviation/pim-interface-mode-s ) { 
+																	expr 'S'; 
+																} else if ( ./pim-interface-mode-abbreviation/pim-interface-mode-d ) { 
+																	expr 'D'; 
+																} else if ( ./pim-interface-mode-abbreviation/pim-interface-mode-b ) {
+																	expr 'B';
+																} else {
+																	expr '-';
+																}
+															}
+														}
+													}
+												}
+												<ancp-sum> {
+													<pdesc> "ANCP Summary";
+													<note> 'Using "show ancp summary neighbor" instead of "show ancp summary".';
+													var $rpc = <get-ancp-neighbor-summary>;
+													var $ancp = jcs:execute( $connection, $rpc );
+													for-each( $ancp//ancp-neighbors-summary ) {
+														<esta> ./ancp-established-status-nbr-summary;
+													}
+												}
+												<ping> {
+													<pdesc> "Ping v4";
+													var $rpc = <ping> { <inet>; <host> 't-online.de'; <count> '5'; <rapid>; };
+													var $ping = jcs:execute( $connection, $rpc );
+													<sent> $ping/probe-results-summary/probes-sent;
+													<rec> $ping/probe-results-summary/responses-received;
+													<lost> $ping/probe-results-summary/packet-loss;
+												}
+												<ping6> {
+													<pdesc> "Ping v6";
+													var $rpc = <ping> { <inet6>; <host> 't-online.de'; <count> '5'; <rapid>; };
+													var $ping = jcs:execute( $connection, $rpc );
+													<sent> $ping/probe-results-summary/probes-sent;
+													<rec> $ping/probe-results-summary/responses-received;
+													<lost> $ping/probe-results-summary/packet-loss;
+												}
+												<radius> {
+													<pdesc> "Radius Servers";
+													<note> "Fuck bad XML. Hoping that 'status' will be present all the time.";
+													var $rpc = <get-radius-servers-table>;
+													var $rads = jcs:execute( $connection, $rpc );
+													mvar $radProf = "";
+													mvar $radAddr = "";
+													mvar $radAuth = "";
+													mvar $radAcc = "";
+													mvar $radStat = "";
+													for-each ( $rads/aaa-module-profile-radius-servers/node()[ name() != "" ] ) {
+														if ( name( . ) = "profile-name" ) {
+															set $radProf = normalize-space( . );
+														} else if ( name( . ) = "server-address" ) {
+															set $radAddr = normalize-space( . );
+														} else if ( name( . ) = "authentication-port" ) {
+															set $radAuth = normalize-space( . );
+														} else if ( name( . ) = "accounting-port" ) {
+															set $radAcc = normalize-space( . );
+														} else if ( name( . ) = "available-status" ) {
+															set $radStat = normalize-space( . );
+															<srv> {
+																<id> $radProf _ "-" _ $radAddr;
+																<addr> $radAddr _ ' ';
+																<prof> $radProf _ ' ';
+																<auth-port> $radAuth _ ' ';
+																<acc-port> $radAcc _ ' ';
+																<status> $radStat _ ' ';
+															}
+															
+															set $radAddr = "";
+															set $radAuth = "";
+															set $radAcc = "";
+															set $radStat = "";
+														}
+													}
+												}
+												<ppp> {
+													<pdesc> "PPP";
+													var $rpc = <get-ppp-user-aaa-test-result> { <user> 'dummy'; <password> 'dummy'; <agent-remote-id> 'DEU.DTAG.BICOTEST01'; };
+													var $ppp = jcs:execute( $connection, $rpc );
+													<res> $ppp//aaa-test-status[1];
+												}
+												<dumps> {
+													<pdesc> "Core Dumps";
+													var $rpc = <get-system-core-dumps>;
+													var $dumps = jcs:execute( $connection, $rpc );
+													<amount> $dumps//total-files _ '';
+													for-each( $dumps//file-information ) {
+														<dump> {
+															<name> ./file-name;
+														}
+													}
+												}
+												<salarms> {
+													<pdesc> "System Alarms";
+													var $rpc = <get-system-alarm-information>;
+													var $alarms = jcs:execute( $connection, $rpc );
+													<amount> $alarms//active-alarm-count _ '';
+													for-each( $alarms//alarm-detail ) {
+														<alarm> {
+															<name> ./alarm-short-description;
+															<class> ./alarm-class;
+															<type> ./alarm-type;
+														}
+													}
+												}
+												<alarms> {
+													<pdesc> "Alarms";
+													var $rpc = <get-alarm-information>;
+													var $alarms = jcs:execute( $connection, $rpc );
+													<amount> $alarms//active-alarm-count _ '';
+													for-each( $alarms//alarm-detail ) {
+														<alarm> {
+															<name> ./alarm-short-description;
+															<class> ./alarm-class;
+															<type> ./alarm-type;
+														}
+													}
+												}
+												<keys> {
+													<pdesc> "License Keys";
+													var $rpc = <get-license-key-information>;
+													var $keys = jcs:execute( $connection, $rpc );
+													for-each( $keys//license-key ) {
+														<key> {
+															<name> ./name;
+														}
+													}
+												}
+												<esmc> {
+													<pdesc> "ESMC";
+													<note> 'Not activated yet.';
+													var $rpc = <get-synchronous-ethernet-esmc-transmit> { <detail>; };
+													var $esmc = jcs:execute( $connection, $rpc );
+													for-each( $esmc//clock-synchronization-esmc-transmit ) {
+														<item> {
+															<name> ./esmc-transmit-interface-name;
+															<status> ./esmc-transmit-interface-status;
+														}
+													}
+												}
+											}
+										}
+										
+										var $path = "/var/tmp/upgradeCheckerOutput_" _ $deviceName _ ".xml";
+										if ( $createCheckPoint ) {
+											<exsl:document href=$path> {
+												copy-of $save;
+											}
+											<p class='infoError'> 'Created file.';
+										} else {
+											var $readDocument = document( $path );
+											if ( $readDocument ) {
+												<p> 'Time of last checkpoint: ' _ $readDocument/save/time _ '.';
+												<div> {
+													call outputTable( $subsetPath = "hardware/inventory", $subsetName = "module", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "fpcs", $subsetName = "fpc", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save/hardware );
+													call outputTable( $subsetPath = "hardware/pics", $subsetName = "pic", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "hardware/chassis-ext", $subsetName = "item", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "hardware/power", $subsetName = "power-usage-item", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "hardware/fans", $subsetName = "fan", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "hardware/res", $subsetName = "eci", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "hardware/clock-modules", $subsetName = "clock", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "hardware/fpm", $subsetName = "eci", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													
+													/*call compareFirstLevelElements( $currentNodeSet = $save/save/software/subscriber-sum, $readNodeSet = $readDocument/save/software/subscriber-sum );*/
+													call outputTable( $subsetPath = "software/subscriber-ports", $subsetName = "port", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "software/descriptions", $subsetName = "physical-interface", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "software/bgp-sum", $subsetName = "bgp-peer", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "software/isis-adj", $subsetName = "intf", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "software/mpls-int", $subsetName = "intf", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "software/ldp-sess", $subsetName = "neighbor", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "software/ntp-assoc", $subsetName = "assoc", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													/*call compareFirstLevelElements( $currentNodeSet = $save/save/software/ae0red, $readNodeSet = $readDocument/save/software/ae0red );*/
+													call outputTable( $subsetPath = "software/pim-neighbors", $subsetName = "neighbor", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "software/pim-interfaces", $subsetName = "intf", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													/*call compareFirstLevelElements( $currentNodeSet = $save/save/software/ancp-sum, $readNodeSet = $readDocument/save/software/ancp-sum );
+													call compareFirstLevelElements( $currentNodeSet = $save/save/software/ping, $readNodeSet = $readDocument/save/software/ping );
+													call compareFirstLevelElements( $currentNodeSet = $save/save/software/ping6, $readNodeSet = $readDocument/save/software/ping6 );*/
+													call outputTable( $subsetPath = "software/radius", $subsetName = "srv", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													/*call compareFirstLevelElements( $currentNodeSet = $save/save/software/ppp, $readNodeSet = $readDocument/save/software/ppp );*/
+													call outputTable( $subsetPath = "software/dumps", $subsetName = "dump", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "software/salarms", $subsetName = "alarm", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "software/alarms", $subsetName = "alarm", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "software/keys", $subsetName = "key", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+													call outputTable( $subsetPath = "software/esmc", $subsetName = "item", $currentNodeSet = $save/save, $readNodeSet = $readDocument/save );
+												}
+												<div class='toggleView'> {
+													<div class='toggleViewButton ml-10 unselectable'> {
+														<span class='toggleViewButtonText'> 'Hide';
+														<span> 'Device Results Summary';
+													}
+													<div class='toggleViewContent ml-20'> {
+														<p class='subheaderUnderline'> 'Results';
+														<p> {
+															<table class='xlarge'> {
+																<tr> {
+																	<th> 'Total Lines';
+																	<th> 'Total Fields';
+																	<th> 'Changed Fields';
+																	<th> 'New Lines';
+																	<th> 'Gone Lines';
+																}
+																<tr> {
+																	<td> $counterTotalLines _ '';
+																	<td> $counterTotalFields _ '';
+																	<td class='orangeBack'> $counterChangedFields _ '';
+																	<td class='greenBack'> $counterNewLines _ '';
+																	<td class='redBack'> $counterGoneLines _ '';
+																}
+															}
+														}
+														
+														<p class="subheaderUnderline"> "Notes";
+														<p> {
+															<table class="xlarge"> {
+																<tr> {
+																	<th> "Area";
+																	<th> "Note";
+																}
+																for-each ( $readDocument//note ) {
+																	<tr> {
+																		<td> ../pdesc;
+																		<td> .;
+																	}
+																}
+															}
+														}
+													}
+												}
+											} else {
+												<p class='majorError'> "Could not open file. The temp file is saved on the Space node, not the BNG! Did the active node change in the last time?";
+											}
+										}
+									} else {
+										<p> {
+											expr "Error while connecting to " _ $deviceName _ ":";
+											for-each ( $connection//self::xnm:error ) {
+												expr .; <br>;
+											}
+										}
+									}
+									expr jcs:close( $connection );
+									copy-of bcersows:insertBackButton();
+								}
+							}
+						}
+						if ( $createCheckPoint ) {} else {
+							<div> {
+								<p class="bold subheader">{
+									<span class="left"> { expr "Legend"; }
+								}
+								<p> {
+									<table class="middle"> {
+										<tr> { <th> "Color"; <th> "Meaning"; <th> "Amount"; }
+										<tr> { <td class="greenBack"> " "; <td> "New in current read."; <td> $counterNewLines _ ' '; }
+										<tr> { <td class="orangeBack"> " "; <td> "Changed in current read."; <td> $counterChangedFields _ ' '; }
+										<tr> { <td class="redBack"> " "; <td> "Missing in current read."; <td> $counterGoneLines _ ' '; }
+									}
+								}
+							}
+						}
+					}
+				}	/* Should be the end of #whole. Space thinks otherwise.. */
+				<div class="wholeLine footer"> {
+					var $duration = date:seconds() - date:seconds( $localtime );
+					<span class="left italic unselectable"> "vs. 1.0";
+					<span class="right"> { 
+						expr "Dauer der Ausf"; <xsl:text disable-output-escaping="yes"> "&uuml;"; expr "hrung: " _ $duration _ "s. ";
+					}
+				}
+			}
+		}
+	}	
+}
+}
+
+template compareFirstLevelElements ( $currentNodeSet, $readNodeSet ) {
+	<div class='outputFirstLevel'> {
+		call insertSectionBeginning( $name = $currentNodeSet//pdesc );
+		var $evalRead = $readNodeSet/node()[ name() != "" ][ count( node()[ name() != "" ] ) = 0 ][name() != 'pdesc' and name() != 'note'];
+		if ( $evalRead ) {
+			<table class='automaticFirstLevelTable wide'> {
+				for-each ( $currentNodeSet/node()[ name() != "" ][ count( node()[ name() != "" ] ) = 0 ][name() != 'pdesc' and name() != 'note'] ) {
+					var $position = position();
+					<tr> {
+						<th> name( . ) _ '';
+						if ( normalize-space( . ) = normalize-space( $evalRead[ $position ] ) ) {
+							<td> . _ '';
+						} else {
+							var $titleIfChanged = 'Previous value: ' _ $evalRead[ $position ] _ '.';
+							<td class='orangeBack' title=$titleIfChanged> . _ '';
+						}
+					}
+					set $counterTotalFields = $counterTotalFields + 1;
+					set $counterTotalLines = $counterTotalLines + 1;
+				}
+			}
+		} else {
+			<p> 'No data to show.';
+		}
+	}
+}
+
+						/*<script> 'console.log( "Read val: ' _ $index _ '" );';*/
+template outputTable ( $subsetPath, $subsetName, $currentNodeSet, $readNodeSet ) {
+	<div class='outputTable'> {
+		if ( $subsetName != "" ) {
+			var $evalCurr = saxon:evaluate( '$currentNodeSet/' _ $subsetPath _ '/' _ $subsetName );
+			var $evalRead = saxon:evaluate( '$readNodeSet/' _ $subsetPath _ '/' _ $subsetName );
+			
+			var $pdesc = saxon:evaluate( '$currentNodeSet/' _ $subsetPath _ '//pdesc' );
+			call insertSectionBeginning( $name = $pdesc );
+			if ( $evalCurr ) {
+				<table class='automaticTable middle'> {
+					call buildTableHeader( $set = $evalCurr[1] );
+					/* Loop through current rows; initiate comparison with read values. */
+					for-each ( $evalCurr ) {
+						var $index = current()/node()[1];
+						var $amount = count( $evalRead );
+						mvar $continue = true();
+						mvar $counter = 0;
+						while( $continue ) {
+							set $counter = $counter + 1;
+							/* Comparing the first column (as it's the ID)! */
+							if ( normalize-space( $evalRead[ $counter ]/node()[1] ) = normalize-space( $index ) ) {
+								call compareTableRow( $set = ., $compare = $evalRead[ $counter ] );
+								set $continue = false();
+							} else if ( $counter > $amount ) {
+								call buildTableRow( $set = ., $markup = "1" );
+								set $continue = false();
+							}
+						}
+					}
+					
+					/* List entries that were in the file, but are not present anymore. */
+					for-each ( $evalRead ) {
+						var $index = current()/node()[1];
+						var $amount = count( $evalCurr );
+						mvar $continue = true();
+						mvar $counter = 0;
+						while( $continue ) {
+							set $counter = $counter + 1;
+							if ( normalize-space( $evalCurr[ $counter ]/node()[1] ) = normalize-space( $index ) ) {
+								set $continue = false();
+							}
+							if ( $counter > $amount ) {
+								call buildTableRow( $set = ., $markup = "2" );
+								set $continue = false();
+							}
+						}
+					}
+				}
+			} else {
+				<p> 'No data to show.';
+			}
+		}
+	}
+}
+
+template buildTableHeader ( $set ) {
+	<tr> {
+		for-each ( $set/node()[ name() != "" ] ) {
+			var $tagName = name(.);
+			<th> {
+				call convertTagNames( $tagName );
+			}
+		}
+	}
+}
+
+/* 
+	$markup:
+		- 1: Line added (green).
+		- 2: Line deleted (red).
+*/
+template buildTableRow ( $set, $markup ) {
+	var $class = {
+		if ( $markup = "1" ) {
+			expr "greenBack";
+			set $counterNewLines = $counterNewLines + 1;
+		} else if ( $markup = "2" ) {
+			expr "redBack";
+			set $counterGoneLines = $counterGoneLines + 1;
+		} else {
+			expr "";
+		}
+	}
+	<tr class=$class> {
+		for-each ( $set/node()[ name() != "" ] ) {
+			<td> .;
+			set $counterTotalFields = $counterTotalFields +1;
+		}
+	}
+	set $counterTotalLines = $counterTotalLines +1;
+}
+/* 
+	Compares the columns of a row.
+*/
+template compareTableRow ( $set, $compare ) {
+	<tr> {
+		for-each ( $set/node()[ name() != "" ] ) {
+			var $position = position();
+			if ( current() != $compare/node()[ name() != "" ][ $position ] ) {
+				var $classIfChanged = "orangeBack";
+				set $counterChangedFields = $counterChangedFields + 1;
+				var $titleIfChanged = 'Previous value: ' _ $compare/node()[ name() != "" ][ $position ] _ '.';
+				<td class=$classIfChanged title=$titleIfChanged> .;
+			} else {
+				<td> .;
+			}
+			set $counterTotalFields = $counterTotalFields +1;
+		}
+	}
+	set $counterTotalLines = $counterTotalLines +1;
+}
+
+template convertTagNames ( $tagName ) {
+	expr str:replace( $tagName, '-', ' ' );
+}
+
+template checkErrors ( $resultsNodeSet, $msg = "", $connection ) {
+	if ( $resultsNodeSet//self::xnm:error ) {
+		copy-of bcersows:outputErrorDiv($resultsNodeSet, $msg);
+	}
+}
+
+template insertSectionBeginning ( $name ) {
+	<p class='underline ml-5'> $name _ ' ';
+}
