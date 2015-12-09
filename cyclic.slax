@@ -27,6 +27,10 @@ import "cim-lib.slax";
 /* @PROMOTE = "yes" */
 
 
+/*@VARIABLECONTEXT="[{'name':'XPATHVARIABLE19','defaultvalue':'mydefaultvalue','parameterscope':'devicespecific'},
+{'name':'XPATHVARIABLE20','configuredvaluexpath':'/device/[name="XPATHVARIABLE21"]','parameterscope':'devicespecific'},
+{'name':'XPATHVARIABLE21','configuredvaluexpath':'/device/[name="XPATHVARIABLE20"]','parameterscope':'devicespecific'},
+{'name':'XPATHVARIABLE22','selectionvalues':'myselectionvalue1,myselectionvalue2,myselectionvalue3','parameterscope':'devicespecific'}]" */
 
 
 /* Global variables */
