@@ -21,7 +21,7 @@ import "cim-lib.slax";
 
 /* Junos Space specific context, name and description */
 /* @CONTEXT = "/device/interface-information/physical-interface" */
-/* @NAME = "PhysicalG1" */
+/* @NAME = "PhysicalG11" */
 /* @DESCRIPTION = "Test the device specific and entity specific behaviour is scripts" */
 /* @EXECUTIONTYPE = "GROUPEDEXECUTION" */
 /* @PROMOTE = "yes" */
